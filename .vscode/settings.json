@@ -1,0 +1,49 @@
+{
+    // Load .env for the Python extension (run, debug, test discovery). This is the default
+    // location, set explicitly so it is obvious where PYTHONPATH= comes from.
+    "python.envFile": "${workspaceFolder}/.env",
+
+    // .env does not reach the integrated terminal, so blank PYTHONPATH here too. Without this,
+    // ROS 2's site-packages leaks in and pytest auto-loads a plugin that crashes.
+    "terminal.integrated.env.linux": {
+        "PYTHONPATH": ""
+    },
+
+    "jupyter.interactiveWindow.cellMarker.codeRegex": "^# COMMAND ----------|^# Databricks notebook source|^(#\\s*%%|#\\s*\\<codecell\\>|#\\s*In\\[\\d*?\\]|#\\s*In\\[ \\])",
+    "jupyter.interactiveWindow.cellMarker.default": "# COMMAND ----------",
+    "python.testing.pytestArgs": [
+        "."
+    ],
+    "files.exclude": {
+        "**/*.egg-info": true,
+        "**/__pycache__": true,
+        ".pytest_cache": true,
+        "dist": true,
+    },
+    "files.associations": {
+        "**/.gitkeep": "markdown"
+    },
+
+    // Pylance settings (VS Code)
+    // Set typeCheckingMode to "basic" to enable type checking!
+    "python.analysis.typeCheckingMode": "off",
+    "python.analysis.extraPaths": ["src", "lib", "resources"],
+    "python.analysis.diagnosticMode": "workspace",
+    "python.analysis.stubPath": ".vscode",
+
+    // Pyright settings (Cursor)
+    // Set typeCheckingMode to "basic" to enable type checking!
+    "cursorpyright.analysis.typeCheckingMode": "off",
+    "cursorpyright.analysis.extraPaths": ["src", "lib", "resources"],
+    "cursorpyright.analysis.diagnosticMode": "workspace",
+    "cursorpyright.analysis.stubPath": ".vscode",
+
+    // General Python settings
+    "python.defaultInterpreterPath": "./.venv/bin/python",
+    "python.testing.unittestEnabled": false,
+    "python.testing.pytestEnabled": true,
+    "[python]": {
+        "editor.defaultFormatter": "charliermarsh.ruff",
+        "editor.formatOnSave": true,
+    },
+}

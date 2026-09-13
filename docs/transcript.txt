@@ -1,0 +1,439 @@
+Intro
+This is the very first part of an
+endtoend datab bricks project where we
+will be implementing a full use case
+from scratch end to end leveraging tools
+such as lakeflow from data bricks to
+ingest data into the platform and to
+process it. We will be also training a
+machine learning model using the mosaic
+AI functionalities and we will be also
+using lots of new features within data
+bricks such as datab bricks apps and
+lakebase. By the end of this video
+series, you should have a very good
+understanding of how the different
+components of data bricks work together
+to deliver an end to end data and the
+eye solution from the initial ingestion
+to the insights at the end. This very
+first video is focusing mainly on
+ingesting data from a streaming data
+source in this case Amazon Kinesis and
+then in the following videos we will
+step by step also look into the other
+components. Now, let me quickly
+Use Case
+introduce the use case we will be
+working on in this project. Imagine
+you're working for a car insurance
+company. With data bricks, we want to
+solve two things. First, we want to
+bring all data of our company together,
+meaning the customer information, the
+claims data, the policy data, the
+telemetics data that we capture in the
+cars. We want to create the single
+source of truth within data bricks so
+that we can run proper analytics on top.
+and at the end take smarter business
+decisions. Second, we want to improve
+the claims process at our company.
+Currently, it's super manual. So,
+whenever a customer submits this claim
+of a car crash, a human manually checks
+everything. We want to automate that
+within databicks. So, we want to
+automatically verify several things such
+as what was the driver's speed, right?
+We got this from the telemetics
+information. things like is the customer
+even eligible for this refund based on
+their policy and things like that and
+then maybe also super interesting does
+the car damage described by the customer
+does it even make sense. So they upload
+a picture of the car crash whenever they
+submit a claim and then they
+self-classify basically the severity of
+this car crash. And what we want to do
+is we want to train a machine learning
+model based on several images of car
+crashes and we want to automatically
+classify their uploaded image and then
+we also want to check if the
+classification from our machine learning
+model matches what the customer has
+Simple Streaming Ingestion
+described. So to make this happen, we
+are building the lakehouse architecture
+on data bricks. We will ingest data from
+three key data sources. We will have a
+SQL server holding customer policy and
+claim information. We will also ingest
+data from a data stream. In this case,
+it's Kinesis data streams where the
+telemetics data is streamed into. And we
+will also ingest data directly from an
+object store. In this case from Amazon
+S3 where the actual images of the car
+crashes are uploaded for the ingestion
+as well as data quality checks and
+transformations. Later on we will use
+lake flow within data bricks to train
+the car damage classification machine
+learning model. We will use mosa and its
+mlflow capabilities within data bricks
+and then expose it via a model serving
+endpoint. We will build standard
+reporting dashboards for this insurance
+company using a SQL warehouse as well as
+AIBI dashboards within databicks. And we
+will also make the data available
+through a natural language interface
+using databicks genie. And finally, we
+will create a portal for the customers
+to submit their claims. And we will also
+have an admin view within this portal to
+review all of the claims. And for that,
+we are going to use a combination of
+lakebase to get this low latency access
+to our data as well as datab bricks apps
+to build the actual front end. All
+right, let's switch into data bricks and
+get started here. So before we dive into
+the first ingestion pipeline, let's have
+a quick look how our catalog is set up.
+How our unity catalog is structured
+here. So we have one catalog called
+smart claims def. This will be the main
+catalog we will be working with and
+inside there we have four key schemas.
+The first one being the landing schema
+where initially our files that are not
+yet converted into delta format land in
+our object store. Right? And then we
+have the typical three layers of a
+medallion architecture. We first have
+our brass schema here where we will
+transform our data in delta but leave it
+as is. In the silver one, we will do our
+first cleaning operations. We will do
+some standardizations things like that.
+Some data quality checks and then in the
+actual gold layer we will have our
+aggregated data our joint data ready to
+consume by for example NBI tool. Cool.
+For the first data source we would like
+to ingest streaming data. In our use
+case we have those teleatic sensors in
+the different cars and they stream data
+into Kinesis data streams. Kinesis data
+streams is a managed service by AWS.
+It's kind of similar to things like
+Kafka where you can stream messages in
+and then within data bricks to ingest it
+into the Unity catalog we need to read
+from the stream and create delta tables
+out of that. For this we will create a
+new lakeflow declarative pipeline
+formerly known as DT. And all we have to
+do is click on new ETL pipeline. Provide
+a name here. Let's call it Kinesis
+ingestion.
+Let's provide the default catalog and
+schema. We can now read and write from
+different uh cataloges and schemas, but
+this will be our default one right here.
+And we select smart claims def and
+browse as we would like to directly
+transform the data into delta format and
+store it in the bronze layer here. And
+here we select start with an empty file
+and we select Python as our language in
+this case. We could also do that with
+SQL, but for now, let's stick with
+Python. And what you see here now is the
+new lakeflow declarative pipeline UI.
+It's kind of an IDE specifically
+designed to work with Lakeflow
+declarative pipelines. It's currently in
+beta and it's it's super nice. You will
+see in a second how the end to end
+workflow looks like. Here on the left
+side, we have an overview about all of
+our files in this project. So let's
+maybe rename this one to Kinesis simple
+as we will start with an simple example
+here and we're good to go. On the right
+hand side you will see later on the
+graph being built automatically and
+visualized and on the bottom we will
+later see the actual tables created by
+this pipeline here and also see some
+sample values to make sure we are on the
+right track. Now what we want to do is
+we want to read from the Kinesis stream.
+So first of all I'm importing some
+libraries that we will need later on and
+then we are defining some Kinesis
+specific configuration parameters. Here
+we for example provide the stream name.
+So this is the Kinesis data stream we
+would like to read from. It's located in
+the US East1 region and we want to read
+it from the earliest position. So we
+want to read the whole stream right from
+the beginning. And then this part here
+is also super important. So we need to
+authenticate to our Kinesis data stream
+from our databicks cluster. And there
+are several ways to do so. But what we
+would like to avoid is somewhere storing
+hard-coded secret values. We also don't
+want to mess up with some tokens that we
+need to maintain that we need to rotate.
+And for that the recommended way to do
+so is going by unity catalog service
+credentials. So you see here we
+specified the service credential called
+kinesis service credential. And this is
+something I have created already. Let's
+have a look in the unity catalog for
+that. So on the unity catalog if we go
+to credentials right here you will see
+exactly this kinesis service credential.
+Right. So if you would like to create
+it, it's it's super straightforward. You
+click here on create credential. It's
+not a storage credential. It's a service
+credential right here, which is supposed
+to be used to access several cloud
+services uh other than than storage
+accounts, right? All you have to do is
+provide a name as well as an AM role.
+And this am role is basically allowing
+us to access the Kinesis data stream. We
+don't need to maintain any secrets or
+rotate any tokens or anything like that
+and it's all governed by the Unity
+catalog which is super helpful. I don't
+want to show you all of the details how
+I how I set this up. I will put the
+documentation in the description so you
+can have a look how to create in general
+those service credentials and just to
+quickly maybe um see how it how it looks
+within AWS. So I created this role here
+called Kinesis service credential role.
+I gave it the proper permissions to read
+from the stream to list the shards and
+and so on and so forth. It's all
+documented what you need here. And then
+I also provided this trust relationship
+needed to our external ID which is
+basically the connection to our data
+bricks account. Now as we are already in
+AWS let's also look into the kinesis
+data stream that we are going to use. So
+there is only one over here and this is
+exactly this telemetics stream in US
+east that we will read from now inside
+databicks. All right. Now we have the
+configuration set up. We can
+authenticate to our stream through this
+service credential right here. Now let's
+look into the first implementation of
+our let's say most simple code to
+connect to the stream to read from it
+and to write into a delta table. Here I
+provided some lakeflow declarative
+pipeline code for that. I'm calling the
+table right here teleatics test. I'm
+giving it some additional metadata which
+you will also see later on in the Unity
+catalog. I'm describing that this is a
+parsed Kinesis data stream holding
+telemetics data. In this case, it's not
+parsed yet, but we will change that
+later on. And it's really the most
+minimal implementation how to read from
+the stream and write into databicks. All
+we are saying here is we are reading a
+stream from the format kinesis and we
+provide as the options all the kinesis
+configurations that we have provided
+here at the top. And now we're already
+good to go. So this pipeline here is
+configured as a serverless lakeflow
+declarative pipeline. We could add some
+additional configurations but I think
+for the first test it's good to go. We
+click on run pipeline and see what
+happens. And there we go. Our serverless
+cluster is up and running. We are
+reading from the stream as you see right
+here. And we have written 40 different
+records into the target table. So this
+is the beauty of this new DT UI over
+here or the new lakeflow declarative
+pipeline UI over here. You see right
+away first of all the graph you can see
+it alongside the code that you implement
+and you also see the actual outputs
+here. So you see this telematics test
+table got created and we can even click
+into it and see the sample data here. So
+we see what was actually written into
+the delta table without the need to yeah
+open another tab go to Unity catalog
+click on the sample values and and so on
+and so forth. Now you see we have
+different kind of columns. We have some
+metadata sent over from the Kinesis data
+stream and then we see the actual data
+column here but it's still super cryptic
+and the reason for that is that this is
+only the bite data that we now ingested.
+So we are reading the actual bytes from
+the stream and as we have not performed
+any kind of parsing or any kind of
+implementation logic to make this proper
+readable data we see only the bytes
+here. So this is what we're going to
+change next. We are creating a new file
+Decoding and Parsing
+right here and we call it kinesis
+par.
+The configuration we can just copy over
+here and then we will make some more
+adjustments to actually also parse the
+records and put it into a proper
+structure. So first of all we want we
+don't want to look into the proper data
+formats. We just want to make everything
+a string. For this, we will create this
+map type right here and put it into a
+variable called payload schema.
+And now I am ingesting here a bunch of
+code. So it's a bit more than our
+previous example, but this will help us
+to actually parse our data set right
+here. So we are again creating a
+lakeflow declarative pipeline table.
+This time we call it telematics advanced
+or let's just call it telematics. We
+again provide some comments table
+properties and we also again just load
+the raw stream. But now you see we are
+making some more adjustments to actually
+parse it. The most important thing here
+is we are casting it right here to
+string. So basically we are making the
+bytes that we have seen earlier right
+here readable in a proper string format.
+And we create this new column called the
+raw JSON. Right here we are again
+selecting all of the additional metadata
+from the Kinesis data stream. And we
+create a new column called decoded data
+where we actually even take it a step
+further. So we are not just pasting all
+the data that we converted right here
+into one column. No, we are actually
+decoding it first of all by using this
+from JSON function and then we are
+creating proper columns to our target
+table. First of all, we will have one
+column called stream metadata where we
+put all of the Kinesis specific stuff.
+But then more importantly here we are
+having the actual data like the speed
+which will be super important later on
+in our analysis. the latitude, the
+longitude, the event timestamp, the
+chases number. So the actual data
+basically will be put into proper
+columns now in our target table. So if
+we execute this one right here, we will
+see that the output will now look way
+better for us. You see we're getting a
+new table right here. This time called
+telematics. Again, it's reading those 40
+records that are already sitting inside
+the stream. And now if we click into the
+table we see okay now we properly have
+our columns right we have our latitude
+we have our longitude we have the speed
+and we basically parsed everything we
+transformed it from the bite format into
+proper strings and then we even further
+separated it from this big JSON chunk
+into different kind of columns in our
+target table. Now you already saw
+whenever I'm executing this pipeline
+here, it's actually reading from the
+stream and retrieving all the new data
+that was inserted there compared to the
+last run. And this is also the beauty of
+the lakeflow declarative pipeline. So we
+did not have to specify any
+checkpointing location and stuff like
+that. All of that is abstracted away for
+us. And we also see streaming does not
+necessarily have to be a 24/7
+running pipeline. It can also be
+executed in a batch mode like like we're
+doing it right now. Right? We could also
+change this. So we could go into the
+configuration and we can say okay it's
+not a triggered pipeline anymore but
+it's like a continuous pipeline. And
+then this would actually run in
+streaming mode and all the time reading
+from our streaming source and ingesting
+it in real time into our target tables.
+So let's try this out as well. Let's
+make this a streaming pipeline. And then
+let me under the hood send a few records
+in real time into the stream by
+executing a script I have.
+There we go. Scripts started. And you
+see it's now writing records actually.
+So this is basically my script sending
+records every uh I think 3 seconds or
+something like that. And you see the
+records being updated here in real time.
+And you can even click on the actual
+declarative pipeline and also have this
+UI if you're more familiar to to that
+one and see also here for the different
+streams. So in this case we are now
+continuously running the simple stream
+right here where we're not pausing the
+records as well as the more advanced
+stream and both of them ingest data in
+real time as this is now a continuously
+running pipeline. Now I stopped it.
+Let's quickly check in the Unity catalog
+how things look like. We are looking
+into the brows and then we see here
+those two tables. We can delete the
+second one as this was only for
+demonstration purposes. But then for the
+actual telematics table, we have now
+ingested our streaming data from our
+Kinesis data source. We see it's in
+proper columns right here. We can uh
+look in the sample values. And here we
+see again what we also saw in the
+lakeflow declarative pipelines UI. Cool.
+Let's now continue with the other data
+Outro
+sources. This was the first part of this
+end to end data bricks tutorial. In the
+next parts, we will focus on other
+ingestion sources. We will look into SQL
+server and ingest it using LakeFlow
+connect as well as ingesting data from
+the object store using autoloader.
