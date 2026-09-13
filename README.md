@@ -39,7 +39,14 @@ scans `PYTHONPATH` for plugin entry points, finds ROS's `launch_testing`, import
 on `ModuleNotFoundError: No module named 'yaml'` -- taking every test run with it, Databricks
 or not.
 
-`.env` (gitignored) fixes this, along with telling Databricks Connect which compute to use:
+`.env` fixes this, along with telling Databricks Connect which compute to use. It is
+gitignored, so a fresh clone starts from the tracked template:
+
+```
+$ cp .env.sample .env
+```
+
+The three settings that matter:
 
 ```
 PYTHONPATH=
