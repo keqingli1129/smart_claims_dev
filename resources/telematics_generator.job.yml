@@ -1,0 +1,23 @@
+# Stands in for the transcript's off-screen producer. Run it once for a batch of records, or
+# with a high num_batches while a continuous pipeline is running.
+#
+# Only needed while source_mode is `volume`. With a real Kinesis stream, your producer writes
+# to AWS instead and this job becomes irrelevant.
+
+resources:
+  jobs:
+    telematics_generator:
+      name: telematics_generator
+      description: Writes Kinesis-shaped telematics records into the landing volume.
+
+      tasks:
+        - task_key: generate
+          # No cluster spec -> serverless job compute.
+          notebook_task:
+            notebook_path: ../src/jobs/generate_telematics.py
+            base_parameters:
+              landing_volume_path: /Volumes/${var.catalog}/${resources.schemas.landing.name}/${resources.volumes.telematics_raw.name}
+              stream_name: ${var.kinesis_stream_name}
+              num_batches: "5"
+              events_per_batch: "8"
+              sleep_seconds: "3"

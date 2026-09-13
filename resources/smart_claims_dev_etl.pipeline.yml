@@ -13,6 +13,15 @@ resources:
         - glob:
             include: ../src/smart_claims_dev_etl/transformations/**
 
+      # Read by the transformation files via spark.conf.get(...). This is how a pipeline passes
+      # deploy-time configuration into pipeline code.
+      configuration:
+        source_mode: ${var.source_mode}
+        landing_volume_path: /Volumes/${var.catalog}/${resources.schemas.landing.name}/${resources.volumes.telematics_raw.name}
+        kinesis.stream_name: ${var.kinesis_stream_name}
+        kinesis.region: ${var.kinesis_region}
+        kinesis.service_credential: ${var.kinesis_service_credential}
+
       environment:
         dependencies:
           # We include every dependency defined by pyproject.toml by defining an editable environment

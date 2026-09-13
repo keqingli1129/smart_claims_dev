@@ -16,8 +16,54 @@ artifacts:
 variables:
   catalog:
     description: The catalog to use
+
+  # The medallion layers, declared as resources in resources/catalog.yml. These are BASE names;
+  # development mode rewrites the deployed schema to dev_<your_username>_<base>.
+  landing_schema:
+    description: Raw arrivals in their original file format. Volumes only, no tables.
+    default: landing
+  bronze_schema:
+    description: Ingested as-is. The telematics pipeline writes here.
+    default: bronze
+  silver_schema:
+    description: Cleaned and quality-enforced. Empty until a later part.
+    default: silver
+  gold_schema:
+    description: Aggregated and business-ready. Empty until a later part.
+    default: gold
+
+  landing_volume:
+    description: Volume under the landing schema that the simulated stream writes into.
+    default: telematics_raw
+
   schema:
-    description: The schema to use
+    description: >-
+      Default schema for resources that only need one -- the bronze layer. This resolves to the
+      RESOLVED schema name (including the development-mode username prefix), which is why it
+      references the resource rather than ${var.bronze_schema}.
+    default: ${resources.schemas.bronze.name}
+
+  # --- Telematics source -------------------------------------------------------------------
+  # The transcript reads an AWS Kinesis data stream. Both code paths live in the transformation
+  # files behind one function; this switch picks which one runs.
+  source_mode:
+    description: >-
+      `kinesis` reads the real stream and needs the three kinesis_* values below, plus an AWS
+      stream and a Unity Catalog service credential. `volume` reads the simulated stream from
+      the landing volume and needs no AWS account at all.
+    default: volume
+
+  kinesis_stream_name:
+    description: Kinesis stream to read. Also stamped onto simulated records so both sources match.
+    default: telematics-stream
+  kinesis_region:
+    description: AWS region the stream lives in.
+    default: us-east-1
+  kinesis_service_credential:
+    description: >-
+      Unity Catalog service credential granting read on the stream -- the transcript's way of
+      avoiding hard-coded keys and token rotation. Create it before switching source_mode.
+    default: kinesis_service_credential
 
 targets:
   dev:
@@ -30,8 +76,7 @@ targets:
     workspace:
       host: https://dbc-b5c9918e-c2d2.cloud.databricks.com
     variables:
-      catalog: workspace
-      schema: ${workspace.current_user.short_name}
+      catalog: smart_claims_dev
   prod:
     mode: production
     workspace:
@@ -39,8 +84,7 @@ targets:
       # We explicitly deploy to /Workspace/Users/keqingli1129@gmail.com to make sure we only have a single copy.
       root_path: /Workspace/Users/keqingli1129@gmail.com/.bundle/${bundle.name}/${bundle.target}
     variables:
-      catalog: workspace
-      schema: prod
+      catalog: smart_claims_dev
     permissions:
       - user_name: keqingli1129@gmail.com
         level: CAN_MANAGE

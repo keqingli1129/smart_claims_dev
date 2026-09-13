@@ -1,0 +1,62 @@
+# Unity Catalog foundation for the smart claims project.
+#
+# The transcript walks this structure before writing any pipeline code: one catalog, a landing
+# schema for files that have not become Delta yet, then the three medallion layers. Declaring it
+# here rather than clicking it means a clean checkout reproduces the whole structure, and
+# `bundle destroy` removes exactly these and nothing else.
+
+resources:
+  # NO `catalogs:` BLOCK -- and not by choice.
+  #
+  # This account has Unity Catalog Default Storage enabled, and catalog creation through the
+  # REST API is refused outright:
+  #
+  #   Metastore storage root URL does not exist. Default Storage is enabled in your account.
+  #   You can use the UI to create a new catalog using Default Storage, or please provide a
+  #   storage location for the catalog.   (400 INVALID_STATE)
+  #
+  # The same statement succeeds through SQL, which resolves Default Storage engine-side. Create
+  # the catalog once before the first deploy, from any Databricks compute or locally through
+  # Databricks Connect:
+  #
+  #   CREATE CATALOG IF NOT EXISTS smart_claims_dev;
+  #
+  # Consequence: `bundle destroy` removes the schemas and volume below, but NOT the catalog.
+  # Drop it by hand with `databricks catalogs delete smart_claims_dev --force` if you want it gone.
+
+  schemas:
+    landing:
+      catalog_name: ${var.catalog}
+      name: ${var.landing_schema}
+      comment: >-
+        Raw arrivals in their original file format, before anything becomes Delta.
+        Volumes only; no tables.
+
+    bronze:
+      catalog_name: ${var.catalog}
+      name: ${var.bronze_schema}
+      comment: Ingested as-is -- converted to Delta but otherwise left alone.
+
+    silver:
+      catalog_name: ${var.catalog}
+      name: ${var.silver_schema}
+      comment: Cleaning, standardisation and data quality checks. Empty until a later part.
+
+    gold:
+      catalog_name: ${var.catalog}
+      name: ${var.gold_schema}
+      comment: Aggregated and joined, ready for BI. Empty until a later part.
+
+  volumes:
+    telematics_raw:
+      catalog_name: ${var.catalog}
+      # Referencing the schema RESOURCE rather than ${var.landing_schema} does two things:
+      # it picks up the name development mode rewrites (dev_<you>_landing), and it tells the
+      # deploy to create the schema before the volume.
+      schema_name: ${resources.schemas.landing.name}
+      name: ${var.landing_volume}
+      volume_type: MANAGED
+      comment: >-
+        Stands in for the Kinesis data stream. The generator job writes Kinesis-shaped records
+        here as newline-delimited JSON under `events/`, and the pipeline consumes them
+        incrementally with Auto Loader.
