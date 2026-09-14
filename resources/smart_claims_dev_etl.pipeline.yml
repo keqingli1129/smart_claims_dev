@@ -21,6 +21,15 @@ resources:
         kinesis.stream_name: ${var.kinesis_stream_name}
         kinesis.region: ${var.kinesis_region}
         kinesis.service_credential: ${var.kinesis_service_credential}
+        kafka.bootstrap_servers: ${var.kafka_bootstrap_servers}
+        kafka.topic: ${var.kafka_topic}
+        kafka.starting_offsets: ${var.kafka_starting_offsets}
+        kafka.secret_scope: ${var.kafka_secret_scope}
+        eventhubs.namespace: ${var.eventhubs_namespace}
+        eventhubs.name: ${var.eventhubs_name}
+        eventhubs.starting_offsets: ${var.eventhubs_starting_offsets}
+        eventhubs.secret_scope: ${var.eventhubs_secret_scope}
+        eventhubs.secret_key: ${var.eventhubs_secret_key}
 
       environment:
         dependencies:

@@ -65,6 +65,46 @@ variables:
       avoiding hard-coded keys and token rotation. Create it before switching source_mode.
     default: kinesis_service_credential
 
+  # Kafka, used when source_mode is `kafka`. The same settings drive Azure Event Hubs, which
+  # speaks the Kafka protocol on port 9093 -- only the broker address and credentials differ.
+  kafka_bootstrap_servers:
+    description: Comma-separated broker list, e.g. "broker-1:9092,broker-2:9092".
+    default: ""
+  kafka_topic:
+    description: Topic to subscribe to.
+    default: telematics
+  kafka_starting_offsets:
+    description: '"earliest" replays the topic; "latest" reads only new messages.'
+    default: earliest
+  kafka_secret_scope:
+    description: >-
+      Databricks secret scope holding the SASL username and password. Leave empty for an
+      unauthenticated broker. Credentials must never be pipeline config values -- those are
+      readable by anyone who can view the pipeline.
+    default: ""
+
+  # Azure Event Hubs, used when source_mode is `eventhubs`. This is where Azure Event Grid
+  # delivers events when you want them replayable and readable by a streaming pipeline --
+  # Event Grid itself pushes over HTTP and cannot be subscribed to directly.
+  eventhubs_namespace:
+    description: Namespace only, without the .servicebus.windows.net suffix.
+    default: ""
+  eventhubs_name:
+    description: The Event Hub to read. Equivalent to a Kafka topic.
+    default: telematics
+  eventhubs_starting_offsets:
+    description: '"earliest" replays the hub; "latest" reads only new events.'
+    default: earliest
+  eventhubs_secret_scope:
+    description: >-
+      Databricks secret scope holding the connection string (the value containing
+      SharedAccessKey=). Required for this mode -- a connection string in pipeline config would
+      be visible to anyone who can view the pipeline.
+    default: ""
+  eventhubs_secret_key:
+    description: Key within that scope holding the connection string.
+    default: connection-string
+
 targets:
   dev:
     # The default target uses 'mode: development' to create a development copy.

@@ -27,14 +27,14 @@
     // Pylance settings (VS Code)
     // Set typeCheckingMode to "basic" to enable type checking!
     "python.analysis.typeCheckingMode": "off",
-    "python.analysis.extraPaths": ["src", "lib", "resources"],
+    "python.analysis.extraPaths": ["src", "src/smart_claims_dev_etl", "lib", "resources"],
     "python.analysis.diagnosticMode": "workspace",
     "python.analysis.stubPath": ".vscode",
 
     // Pyright settings (Cursor)
     // Set typeCheckingMode to "basic" to enable type checking!
     "cursorpyright.analysis.typeCheckingMode": "off",
-    "cursorpyright.analysis.extraPaths": ["src", "lib", "resources"],
+    "cursorpyright.analysis.extraPaths": ["src", "src/smart_claims_dev_etl", "lib", "resources"],
     "cursorpyright.analysis.diagnosticMode": "workspace",
     "cursorpyright.analysis.stubPath": ".vscode",
 
