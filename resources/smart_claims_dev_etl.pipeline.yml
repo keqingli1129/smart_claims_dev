@@ -7,6 +7,26 @@ resources:
       catalog: ${var.catalog}
       schema: ${var.schema}
       serverless: true
+
+      # NO `continuous:` HERE -- and, in the dev target, no point putting one.
+      #
+      # A triggered pipeline (the default) processes whatever has arrived and stops. A continuous
+      # one never finishes: the update stays RUNNING, records appear in the tables as they land,
+      # and serverless compute is held until you stop it. That last clause is the whole cost
+      # difference, which is why `mode: development` strips `continuous: true` out of a pipeline
+      # the same way it pauses job schedules -- an idle laptop cannot leave a bill running.
+      # Setting it here is silently ignored in dev and honoured in prod, which is worse than not
+      # setting it at all.
+      #
+      # To run the continuous demo against the dev pipeline, flip the deployed pipeline itself:
+      #
+      #   id=$(databricks bundle summary -t dev -o json | jq -r .resources.pipelines.smart_claims_dev_etl.id)
+      #   databricks pipelines get $id -o json | jq '.spec + {continuous: true}' > /tmp/spec.json
+      #   databricks pipelines update $id --json @/tmp/spec.json     # starts immediately
+      #   # ... run telematics_generator with a high num_batches and watch the counts climb ...
+      #   databricks pipelines stop $id && databricks bundle deploy -t dev   # back to triggered
+      #
+      # The stop is not optional. Until it runs, the pipeline holds serverless compute.
       root_path: "../src/smart_claims_dev_etl"
 
       libraries:
