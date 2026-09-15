@@ -36,6 +36,14 @@ variables:
     description: Volume under the landing schema that the simulated stream writes into.
     default: telematics_raw
 
+  source_schema:
+    description: >-
+      Stands in for the SQL Server database Part 2 ingests from. Holds three Delta tables with
+      the change data feed enabled; the CDC pipeline reads that feed the way Lakeflow Connect's
+      gateway would read a transaction log. Not a medallion layer -- it represents a system
+      outside the lakehouse, and disappears when the managed connector replaces it.
+    default: source
+
   schema:
     description: >-
       Default schema for resources that only need one -- the bronze layer. This resolves to the

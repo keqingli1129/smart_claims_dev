@@ -32,6 +32,14 @@ resources:
         Raw arrivals in their original file format, before anything becomes Delta.
         Volumes only; no tables.
 
+    source:
+      catalog_name: ${var.catalog}
+      name: ${var.source_schema}
+      comment: >-
+        Stand-in for the external SQL Server database of Part 2. Three tables with the Delta
+        change data feed enabled, mutated by the source_database job. Deleted when Lakeflow
+        Connect becomes available.
+
     bronze:
       catalog_name: ${var.catalog}
       name: ${var.bronze_schema}
