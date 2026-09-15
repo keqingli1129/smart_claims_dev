@@ -1,0 +1,39 @@
+# The serverless stand-in for Lakeflow Connect's ingestion pipeline.
+#
+# Deliberately SEPARATE from smart_claims_dev_etl, for two reasons. When Lakeflow Connect
+# becomes available, this file's body is replaced by a gateway_definition + ingestion_definition
+# pair targeting the same bronze schema -- a delete rather than surgery on a working pipeline.
+# And a CDC pipeline and a streaming-ingest pipeline fail for unrelated reasons; sharing one
+# pipeline would mean a broken claim.py stops telematics ingestion too.
+#
+# The datasets live in transformations_dev/, a SIBLING of transformations/ rather than a
+# subfolder. Part 1's glob says `transformations/**`, which requires that exact directory name
+# followed by a separator, so it never matches the sibling -- which is why Part 1 needed no
+# change at all. Note that `**` is not optional: the pipelines API rejects a single asterisk
+# ("Single asterisk glob pattern is not supported ... Use a double asterisk").
+#
+# Both pipelines keep the same root_path, which is what puts utilities/ on the import path for
+# each. A separate root_path would mean a second copy of the shared module.
+
+resources:
+  pipelines:
+    source_cdc:
+      name: source_cdc
+      catalog: ${var.catalog}
+      schema: ${var.schema}
+      serverless: true
+      root_path: "../src/smart_claims_dev_etl"
+
+      libraries:
+        - glob:
+            include: ../src/smart_claims_dev_etl/transformations_dev/**
+
+      configuration:
+        # Fully qualified, so a two-part table reference resolves regardless of the pipeline's
+        # current catalog. Resolved through the resource, so development mode's dev_<user>_
+        # renaming is picked up automatically.
+        source_schema: ${var.catalog}.${resources.schemas.source.name}
+
+      environment:
+        dependencies:
+          - --editable ${workspace.file_path}
