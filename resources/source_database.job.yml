@@ -1,0 +1,23 @@
+# Stands in for Part 2's SQL Server. Seeds three Delta tables with the change data feed
+# enabled, then mutates them the way the transcript mutates its RDS database through DataGrip.
+#
+# This job disappears entirely if Lakeflow Connect becomes available -- see the swap path in
+# docs/001-source-cdc-simulation/spec.md.
+
+resources:
+  jobs:
+    source_database:
+      name: source_database
+      description: Seeds and mutates the simulated SQL Server source tables.
+
+      tasks:
+        - task_key: simulate
+          # No cluster spec -> serverless job compute.
+          notebook_task:
+            notebook_path: ../src/jobs/simulate_source_database.py
+            base_parameters:
+              mode: seed
+              source_schema: ${var.catalog}.${resources.schemas.source.name}
+              random_seed: "42"
+              force: "false"
+              churn: "0"

@@ -503,11 +503,18 @@ Expected: `delta.enableChangeDataFeed` = `true`.
 ```bash
 databricks experimental aitools tools query \
   "SELECT _change_type, count(*) AS n
-   FROM table_changes('smart_claims_dev.dev_keqingli1129_source.claim', 0)
+   FROM table_changes('smart_claims_dev.dev_keqingli1129_source.claim', 1)
    GROUP BY _change_type" --profile DEFAULT
 ```
-Expected: one row, `insert` = 13000. If this returns zero rows, FR-002's create-empty-first
-rule was not followed and the seed landed in the same commit as the enabling.
+Expected: one row, `insert` = 13000.
+
+**Start at version 1, not 0.** Version 0 is the empty CREATE, which predates the enabling, and
+asking for it fails outright with `DELTA_MISSING_CHANGE_DATA: change data was not recorded for
+version [0]`. That error means the feed is working as designed, not that it is broken --
+`DESCRIBE HISTORY` should show v0 CREATE, v1 SET TBLPROPERTIES, v2 WRITE.
+
+If instead this returns zero rows, FR-002's create-empty-first rule was not followed and the
+seed landed in the same commit as the enabling.
 
 - [ ] **Step 5: Confirm the reseed guard**
 
