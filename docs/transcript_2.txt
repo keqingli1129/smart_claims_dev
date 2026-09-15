@@ -1,0 +1,383 @@
+Intro
+The first step in every unified data
+platform is ingesting data from the
+different source systems. One of the key
+data sources is often a relational
+database such as a Postgress or a SQL
+server where you need to pull data from
+and load it into your target analytical
+system such as data bricks. Due to
+performance reasons and maybe real-time
+requirements, you don't want to load the
+full snapshot of the database multiple
+times per day. Instead, you often would
+want to incrementally ingest only the
+changes from the source database into
+the target system. In the past,
+achieving this often meant stitching
+together multiple different systems such
+as DESium, Kafka, and so on. But in this
+hands-on video, I will show you how you
+can do that very simply using databicks
+and lakeflow connect. We will build a
+pipeline in databicks to ingest all the
+inserts, updates, and deletes from a SQL
+server into databicks. First by doing
+all the needed configurations on the
+database site itself and then inside
+datab bricks we will create this
+pipeline to incrementally ingest this
+change data feed and stream it into a
+delta table. This video is the second
+part actually of an end toend data
+bricks project where we are building an
+end toend data and platform for a smart
+insurance company. If you want to know
+all the details and all the context
+around this use case, I would recommend
+watching the first video in this series
+where I explain everything and where we
+will also ingest streaming data into
+data bricks. Now let's jump right into
+data bricks and get started. All right,
+Lakeflow Connect Setup Part 1
+now we are in data bricks and we want to
+ingest the data. Right, currently our
+catalog and schema setup looks like
+this. We have this smart claims defaf
+catalog which is our main catalog and we
+want to ingest the data in the SQL
+server into this browse schema right
+here. Currently we have only one table
+here. This is from the last video. But
+now we want to ingest three more tables
+which currently sit in the SQL server.
+This is the claims data, the customer
+data and the policy data. For this, all
+we have to do is go over here into the
+data ingestion tab and then at the top
+you see those datab bricks native
+connectors. And today we are going to
+use the SQL server one right here. If
+you don't see it in your account, you
+need to enable it in the preview
+settings of the workspace and then you
+can go ahead and click into it. I would
+say the setup is very straightforward.
+We need two components of this ingestion
+pipeline. First of all, we need an
+ingestion gateway. This is what we are
+giving a name for right here. Let's call
+this demo ingestion gateway.
+There we go. Then we select here the
+location for the staging ingestion data.
+So what is this all about? Right. So
+this ingestion gateway, this is the
+first component of LakeFlow connect. And
+this will be the actual compute that is
+used to connect to the transaction log
+to the change data feed from your source
+database in this case SQL server and it
+will read from there all the insert
+update and delete operations performed
+on the database and it will write it
+into a unity catalog volume and this
+volume location is what we specify here.
+So if we select our catalog right here
+the smart claims dev for the schema we
+would select the the landing schema
+right here. This is the first part of
+lakeflow connect. The next part is what
+you see here. This is the ingestion
+pipeline and this is what will actually
+do the upsert operations into our target
+bronze table. Right? So this is a
+separate pipeline. We have the ingestion
+gateway reading in all the transaction
+logs, all the inserts, updates, deletes,
+pushing it into a volume and then we can
+basically schedule this ingestion
+pipeline which will read from this
+volume and apply all the inserts,
+updates, deletes into a target delta
+table. So let's call this demo ingestion
+pipeline. And here we now need to select
+a connection as you can see here. So
+this is basically a Unity catalog object
+that we created beforehand where we
+specify the host right where we want to
+connect to as well as the credentials to
+connect into the target system. Here we
+already have this one. If we click into
+it we will be routed to the Unity
+catalog and we will see that we created
+here this connection which is a SQL
+server connection. We provided the URL,
+the host, the port to connect to as well
+as the username and the password to
+authenticate to that. Right? All right.
+So now before we create the pipeline and
+actually continue, there are a couple of
+things that needs to happen on the
+source database side. So we need to
+enable a few configurations. This is
+typically done by a database
+administrator to make sure first of all
+this transaction log is even written by
+the database and to make sure we can
+read from it. For this, let's quickly
+have a look how our database looks like
+and what we need to enable exactly. All
+right. Now, we are in data grip. Data
+SQL Server Setup
+grip is kind of a database IDE. And here
+we will have a look on our data in the
+database as well as the configurations
+that we need to make. First of all, I
+mentioned we have three different tables
+that we want to ingest. This is also
+what you see here on the left hand side.
+So I connected to my SQL server which is
+hosted on RDS and we see the free tables
+here and if we query them we can also
+have a look how they how they look like
+for the customer one you see we have
+like the customer ID a date of birth and
+so on and so forth. The policy also
+holds some kind of data related to the
+different policies of the customers and
+then the claim data holds the extra
+information about the different claims
+performed by the customers. Now to
+ingest this data with lakeflow connect
+we need to do a couple of things as I
+mentioned and this is what we're going
+to do next. First thing we have to do
+and by the way you find all of this also
+in the datab bricks documentation is to
+enable the change tracking on the
+database itself as well as on all of the
+tables. For this we can execute this
+command. We alter the table claims defaf
+and we set the change tracking on. In
+this case we have already done this in
+advance. And then for each of the
+different tables we are altering them
+and enable change tracking for claim as
+well as for the customer table right
+here. This is the first step. After we
+have enabled the change tracking we need
+to enable CDC as well again on the
+database as well as on each of the
+different tables. For an RDS SQL server
+database the syntax looks like that. So
+we execute this command for the database
+and then for each of the tables again we
+need to separately enable CDC on the
+table itself. So we do this for the
+policy for the claim and also for the
+customer table. This is already almost
+it. There is one more step. There is a
+script provided in the database
+documentation to set up the DDL capture
+and the schema evolution on the
+database. So for this all we have to do
+is to click on the database click on SQL
+scripts and then we run a SQL script and
+here we select the one that we have
+downloaded from the datab bricks
+documentation. All right and now we're
+good to go. So we can switch back to
+datab bricks and here we can continue
+Lakeflow Connect Setup Part 2
+with the setup of our ingestion
+pipeline. Right. So we specified the
+catalog here and we specified the
+connection. We can click on create
+pipeline and continue. And now what is
+going to happen? So this will take
+typically a couple of minutes because in
+the background now there is a VM set up
+for the ingestion gateway. So this is
+the one that will be used now to read
+from this transaction log from the
+database from the SQL server using this
+connection that we have provided and
+we'll write it into a volume which will
+then be picked up by the ingestion
+pipeline. afterwards. Right? So here we
+need to wait a couple of minutes. This
+is currently not available yet in
+serless. So this will be always a
+classic compute VM. You can also check
+it in your underlying AWS or Azure
+account. So let's wait for that and then
+we can proceed with the next steps.
+Cool. After a few minutes, you will see
+something like this. So now we are
+connected to our SQL server through the
+ingestion gateway and we basically see
+an overview of our database of the
+schema and of the different tables that
+we have and now we can select which
+tables we actually want to ingest. In
+this case we want to ingest the claim
+customer as well as the policy. So we
+select all of them and then we click on
+next right here. Now we have to select
+where to put basically the destination
+tables. So inside datrix we want to put
+it into this browse schema right here.
+So we select save and continue. We see
+the ingestion pipeline was saved. And
+now the pipeline configuration is
+validated. There we go. We are on the
+very last step. Here we can provide some
+additional configurations for this
+ingestion pipeline itself. So here for
+example we can add a schedule so that
+the ingestion pipeline is executed every
+hour for example. So again we have those
+two parts right? We have the ingestion
+gateway which is running all the time
+and getting the changes from the source
+system and putting it into a volume in
+data bricks. And then we have the
+ingestion pipeline which is then using
+the inserts, updates, deletes from the
+volume and inserting it into a target
+table in our bronze layer. And this is
+basically the ingestion pipeline
+configuration. Here we can click on save
+and run pipeline and then we get
+directly moved into the databicks jobs
+and pipelines UI. And here the job is
+executed. All right. And there we go.
+The pipeline is set up as well. And now
+it basically starts to ingest the data
+into the three different target tables.
+You see it's doing this in parallel for
+the claim, customer, and policy table.
+And that is already it. So all three
+tables have been ingested. So you see
+there were 13,000 records for the claim
+table upserted. for the customer it were
+around 7,000 and 12,000 for the policy.
+Now let's check if this is actually
+true. So we go to the catalog and we
+click on our smart claims def cat
+catalog and first of all inside the
+landing one we should see something
+exactly here. We see this volume which
+was created to initially by the
+ingestion gateway insert a snapshot in
+this case of the source database. So as
+this was our very first run it did a
+snapshot right of the source database
+and now for the next executions it will
+only track and only insert the recent
+changes the inserts updates deletes
+right now we see next to the telematics
+one that we already had before we see
+the claim customer and policy tables
+they're all streaming tables because
+under the hood the ingestion gateway as
+well as the ingestion pipeline is
+running a lakeflow declarative pipeline
+formerly known as DT therefore it also
+creates streaming tables and we see the
+schema here matches the one that we had
+in the source database and if we click
+into the sample data we can actually see
+data right here right so it all worked
+so what we can do now to check if if
+Test Incremental Load
+also the incremental updates work
+because currently just basically
+inserted the snapshot right but now we
+are interested in the incremental
+changes that happened during the day so
+what we can do is we can switch back to
+our data grip and here we can for each
+of the different tables. We can
+basically execute an insert and update
+and delete and see if it's propagated
+properly to our target delta tables. Now
+let's do this right. So we will insert
+to the policy. We will insert this
+record right here. There we go. One row
+affected. Then we will update from the
+claim table one of the claims to change
+the incident severity that is set there.
+So we execute this one. And as a last
+step, we will also delete one record
+from the customer table. So let's delete
+this one right here. And now we also see
+one row affected. Now let's switch into
+datab bricks and look into how to ingest
+now those incremental changes into datab
+bricks. In data bricks, all we have to
+do now is to execute this ingestion
+pipeline. Before we do that, let's
+quickly check here. I prepared a few SQL
+statements to make sure that we actually
+apply the changes. Right? So if we query
+the customer, this is the one that we
+just deleted in the source system. We
+see here it still exists. For the claim,
+we see that if we query that the
+severity type is set to total loss. We
+change that on the source database. And
+for the policy, we ingested the new
+record with this policy number. But here
+in databicks, it does not exist yet,
+right? because we have not yet applied
+all the changes from the source system.
+Now when we execute this pipeline here,
+we can do this by just starting this
+pipeline right here. And now it will
+basically update all the tables based on
+the most recent changes in our source
+database. Perfect. Here we already
+basically see that it worked. We see
+three changes were recognized. For the
+claims one, we have an upsert. For the
+customer one, we see a delete. And for
+the policy, we also see an upsert. Now
+if we reexecute our three statements
+right here. Now if we start maybe with
+the policy one, we see this record was
+successfully inserted. So it was not
+there before. For the claims table, we
+change the severity type here. So if we
+execute this, we see here the new
+incident severity that was set to minor
+damage. And for the customer that we
+deleted, we should now see no records
+here. And if we execute this exactly, we
+see no records returned. So we
+successfully basically executed all the
+changes on the source system. Awesome.
+That is already it. We have implemented
+Outro
+successfully an incremental pipeline to
+track first of all all the inserts,
+updates, deletes that happen on the
+source system. I've provided you all the
+configurations that you have to do on
+the source database. In this case, the
+SQL server. We have created this
+ingestion gateway as part of the
+lakeflow connect to read all those
+changes and to put it into a volume in
+data bricks and then also this lakeflow
+connect ingestion pipeline will read all
+those changes and apply it whenever we
+execute it to the target systems. So
+this way now we have a fully functional
+higherformant change data capture
+pipeline and we have set all of this up
+within minutes using only LakeFlow
+connect within data bricks and I think
+this is a super powerful solution right
+here.
