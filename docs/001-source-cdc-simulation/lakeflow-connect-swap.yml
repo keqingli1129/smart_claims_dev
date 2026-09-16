@@ -1,0 +1,205 @@
+# The real Lakeflow Connect path -- what replaces source_cdc.pipeline.yml and
+# source_database.job.yml when a SQL Server and classic compute are both available.
+#
+# NOT DEPLOYED. This file lives in docs/ on purpose: databricks.yml's `include` is
+# `resources/*.yml`, so nothing here is picked up by the bundle. Moving it into resources/
+# activates it -- and it will FAIL to deploy until the prerequisites below exist. Keep it
+# here until they do.
+#
+# Prerequisites, none of which this workspace currently has:
+#
+#   1. A reachable SQL Server (the transcript uses RDS) with change tracking AND CDC enabled
+#      on the database and on each of the three tables, plus the DDL-capture script from the
+#      Databricks docs. That is transcript_2.txt's "SQL Server Setup" section.
+#   2. A Unity Catalog CONNECTION holding the host/port/user/password.
+#   3. Classic compute. The gateway is a long-running VM in your own network -- the transcript
+#      says so directly ("currently not available yet in serverless, so this will be always a
+#      classic compute VM"). This workspace has zero clusters.
+#
+# ---------------------------------------------------------------------------------------
+# Step 0, outside the bundle: the UC connection
+# ---------------------------------------------------------------------------------------
+#
+# `databricks bundle schema` has no resources.Connection type as of CLI v1.15.0 -- UC
+# connections are NOT declarable in a DAB. Create it once by hand, then reference it by name:
+#
+#   databricks connections create --profile <PROFILE> --json '{
+#     "name": "smart_claims_sqlserver",
+#     "connection_type": "SQLSERVER",
+#     "options": {
+#       "host": "claims-db.xxxxxxxx.us-east-1.rds.amazonaws.com",
+#       "port": "1433",
+#       "user": "databricks_cdc",
+#       "password": "..."
+#     }
+#   }'
+#
+# The password lands in UC, not in this repo and not in pipeline `configuration` -- pipeline
+# config is readable by anyone who can view the pipeline, the same reason the Kafka and Event
+# Hubs paths in databricks.yml take a secret scope rather than a literal.
+
+resources:
+  pipelines:
+
+    # -----------------------------------------------------------------------------------
+    # Half 1: the ingestion gateway
+    # -----------------------------------------------------------------------------------
+    # Reads the SQL Server transaction log and writes raw change events into a UC volume.
+    # It has no `libraries`, no `catalog`, no `schema`, and no datasets -- a gateway produces
+    # no tables. Everything it needs is in gateway_definition.
+    #
+    # `serverless: true` is absent deliberately, not forgotten. Setting it is what produces
+    # the "not supported" failure the spec predicts.
+    sqlserver_gateway:
+      name: sqlserver_gateway
+
+      gateway_definition:
+        # The connection from step 0. Immutable -- changing it means recreating the gateway.
+        connection_name: smart_claims_sqlserver
+
+        # Where staged change events land. The transcript picks the landing schema here, and
+        # for the same reason this project's landing schema exists: files that have not become
+        # Delta yet. Resolved through the schema RESOURCE so development mode's dev_<user>_
+        # prefix is picked up, exactly like source_cdc.pipeline.yml does for source_schema.
+        gateway_storage_catalog: ${var.catalog}
+        gateway_storage_schema: ${resources.schemas.landing.name}
+
+        # The volume the gateway creates for itself. Do NOT also declare this in catalog.yml --
+        # the gateway owns it. Retention is 30 days by default; reprocessing older than that
+        # needs a fresh snapshot, not a replay.
+        gateway_storage_name: sqlserver_gateway_storage
+
+    # -----------------------------------------------------------------------------------
+    # Half 2: the ingestion pipeline
+    # -----------------------------------------------------------------------------------
+    # Serverless. Reads the staged events and upserts them into bronze. This is the half that
+    # source_cdc.pipeline.yml + utilities/cdc_source.py stand in for today.
+    #
+    # Note what is NOT here: no `libraries`, no glob, no transformations_dev/. An ingestion
+    # pipeline carries an ingestion_definition INSTEAD of libraries -- the two are mutually
+    # exclusive. Everything customer.py does by hand (read the feed, drop update_preimage,
+    # create_auto_cdc_flow with keys/sequence_by/SCD 1) becomes the declarative
+    # table_configuration below. That is the whole point of the swap: the code disappears.
+    sqlserver_ingestion:
+      name: sqlserver_ingestion
+
+      # Lakeflow Connect is triggered-only; `continuous: true` is rejected at create time.
+      # The transcript runs it by hand to demo incremental changes. See the job at the bottom
+      # for the scheduled version.
+      continuous: false
+
+      ingestion_definition:
+        # DAB resolves this to the gateway's pipeline ID at deploy time and orders the two
+        # deploys accordingly -- the same resource-reference trick catalog.yml uses to make
+        # the volume wait for its schema.
+        ingestion_gateway_id: ${resources.pipelines.sqlserver_gateway.id}
+
+        # Applied to every table below unless a table overrides it. This block is the
+        # declarative equivalent of apply_cdc() in utilities/cdc_source.py.
+        table_configuration:
+          # SCD_TYPE_1 = current state only, so a source delete removes the bronze row. This
+          # is what makes the transcript's "no records returned" check on the deleted customer
+          # the correct assertion, and it matches stored_as_scd_type=1 in cdc_source.py.
+          # SCD_TYPE_2 and APPEND_ONLY are the other two options.
+          scd_type: SCD_TYPE_1
+
+        objects:
+          # One entry per table. `source_catalog` is the SQL Server DATABASE and
+          # `source_schema` is its schema -- `dbo` unless the DBA chose otherwise. Both are
+          # source-side names and have nothing to do with the UC catalog.
+          #
+          # destination_table is set explicitly so bronze keeps the names Part 1 and the
+          # simulation already use. Omitting it defaults to the source table name, which here
+          # happens to be identical -- but relying on that would make the bronze contract
+          # depend on SQL Server naming.
+          - table:
+              source_catalog: smart_claims
+              source_schema: dbo
+              source_table: customer
+              destination_catalog: ${var.catalog}
+              destination_schema: ${var.schema}
+              destination_table: customer
+              table_configuration:
+                # The connector reads the source PK when it can; stating it is cheap
+                # insurance and documents the key the CDC apply is grouped by. Same keys as
+                # transformations_dev/customer.py.
+                primary_keys: [customer_id]
+
+          - table:
+              source_catalog: smart_claims
+              source_schema: dbo
+              source_table: policy
+              destination_catalog: ${var.catalog}
+              destination_schema: ${var.schema}
+              destination_table: policy
+              table_configuration:
+                primary_keys: [policy_number]
+
+          - table:
+              source_catalog: smart_claims
+              source_schema: dbo
+              source_table: claim
+              destination_catalog: ${var.catalog}
+              destination_schema: ${var.schema}
+              destination_table: claim
+              table_configuration:
+                primary_keys: [claim_number]
+
+        # An alternative to listing tables one by one: take the whole source schema and let
+        # new tables appear automatically. Convenient, but it removes the explicit bronze
+        # contract, so the three `table:` entries above are the safer default.
+        #
+        # objects:
+        #   - schema:
+        #       source_catalog: smart_claims
+        #       source_schema: dbo
+        #       destination_catalog: ${var.catalog}
+        #       destination_schema: ${var.schema}
+
+  # -------------------------------------------------------------------------------------
+  # Scheduling
+  # -------------------------------------------------------------------------------------
+  # `continuous: false` selects triggered mode -- it is not itself a schedule. The cadence
+  # comes from a job. The transcript configures hourly in the creation wizard; this is the
+  # same thing in code.
+  #
+  # Only the INGESTION pipeline is scheduled. The gateway runs continuously on its own,
+  # draining the transaction log into the volume; it is not something you trigger.
+  jobs:
+    sqlserver_ingestion_schedule:
+      name: sqlserver_ingestion_schedule
+      description: Hourly trigger for the Lakeflow Connect SQL Server ingestion pipeline.
+
+      schedule:
+        quartz_cron_expression: "0 0 * * * ?"
+        timezone_id: America/Chicago
+
+      tasks:
+        - task_key: ingest
+          pipeline_task:
+            pipeline_id: ${resources.pipelines.sqlserver_ingestion.id}
+
+# ---------------------------------------------------------------------------------------
+# What the swap costs and what it buys
+# ---------------------------------------------------------------------------------------
+#
+# Deleted on the way in:
+#   resources/source_cdc.pipeline.yml
+#   resources/source_database.job.yml
+#   src/jobs/simulate_source_database.py
+#   src/smart_claims_dev_etl/transformations_dev/          (the whole folder)
+#   src/smart_claims_dev_etl/utilities/cdc_source.py
+#   the `source` schema in resources/catalog.yml and its var in databricks.yml
+#
+# Unchanged: bronze.customer, bronze.policy, bronze.claim keep their names and schemas.
+# That is the swap boundary the spec describes -- a deletion, not surgery.
+#
+# What you lose: the simulation reproduces CDC semantics honestly, but not schema evolution,
+# not snapshot-then-incremental bootstrapping, and not the 30-day staging window. Those only
+# exist on the managed path.
+#
+# What you gain in the simulation and give up here: it runs on serverless, costs nothing to
+# idle, and reseeds from scratch in one job run.
+#
+# Billing note: the gateway is classic compute billed separately from the serverless
+# ingestion DBUs, and it runs whether or not changes are arriving.
