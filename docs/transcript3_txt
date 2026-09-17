@@ -1,0 +1,422 @@
+Intro
+One of the most common data sources in
+lakehouses is actually a file sitting in
+an object store. Someone pushes their
+CSV files or JSON files or just images
+into your S3 bucket or Azure data lake
+and now you have to figure out how do I
+ingest this data incrementally into my
+data platform such as datab bricks and
+transform it into a proper lakehouse
+format such as delta or iceberg. If you
+implement this, you probably have the
+following questions. How do I figure out
+which files have I already processed? Do
+I need to maintain a separate metadata
+database only for that purpose? Also,
+how do I make really sure I read the
+files only once? And what do I do with
+schema changes? And also, last but not
+least, how do I archive or delete the
+files that I have already processed so
+that I don't have to store the files
+twice? The answer for that in databris
+is autoloader. This video will show you
+hands-on how you can set up autoloader
+within datab bricks together with
+lakeflow declarative pipelines to build
+this incremental file ingestion pipeline
+and then also afterwards archive the
+already processed data using the new
+autoloader functionality called clean
+source. This video is the third part of
+an end toend databicks project. If you
+want to know all the context about this
+use case and the project we're working
+on, I would recommend you to watch the
+first and the second video. I will put
+the links into the video description.
+Now, let's get started and let's dive
+right into databicks.
+Autoloader Example
+And here we are within databicks. Before
+we dive into the actual code to load the
+data from S3, let's check our catalog
+structure again. So here maybe to recap
+if you have not seen the previous two
+videos we have a catalog called smart
+claims deaf and then inside there we
+have four key schemas. We have the
+landing schema, the bronze one, the
+silver and the gold one. For today the
+main focus will be on the landing and on
+the bronze one. Now let's look into the
+landing volume right here. So you will
+see that we have two new volumes here.
+One is called claims and the other one
+is called training images. Those two
+volumes hold all of the data that we
+need for this video. So we are planning
+to create three new tables. One for the
+training images. So those will be images
+of car crashes that we're going to use
+to train our machine learning model
+later on to classify the severity. And
+then we have the claims volume. And here
+we have a couple of folders. First of
+all, we have again images. These are the
+actual images of the accidents and
+uploaded by our customers for specific
+claims. And then we have also within
+this claims volume additional metadata
+describing what these images are about.
+So we have like this CSV file having
+more information what kind of image ID
+it actually is, what kind of claim
+number this uploaded image refers to.
+And then you will see in this folder
+structure we also have this archive
+folder here. And this will be the one
+that we will use later in this video to
+move the already processed files into.
+All right, this is all you have to know
+for now. And we want to use this data
+right here. So this volume is just
+pointing to an S3 bucket, right? So if
+we click into the details tab, we see
+okay, this is pointing to this storage
+location and we want to read this data
+incrementally and then we want to create
+browse tables out of this. You see the
+ones from the last video and here we
+will create three new tables. Next for
+this what we do is we create a new ETL
+pipeline right here and this will be
+again um a lakeflow declarative
+pipeline. Let's call it inest object
+storage and we select our catalog as
+well as the schema and in this case the
+browse schema because we want to write
+into this one and then we create an
+empty file for now. And there we go. Now
+we are again in the new lakeflow
+declarative pipeline UI that you see
+that you can enable in the previous
+settings. And now we want to create
+those three tables that I just described
+those three bronze tables. And for each
+of the tables we will explore different
+autoloader functionalities. And we start
+with the most basic example. Now we zoom
+in a bit and then we start by specifying
+some metadata about our target table. So
+we start with the training images. We
+add a comment here as well. And then we
+also add this table property describing
+it's a browse level table. And now the
+implementation of autoloader is actually
+the most minimal implementation that you
+can have. So all we do here is we are
+reading the stream and putting as a
+format cloud files right here. And this
+basically means that we are going to use
+autoloader under the hood to
+incrementally read the files from the
+specified location. We do one more
+configuration. We set the format to
+binary file as we are dealing with image
+data right here. And then we specify the
+volume path and this will be the one
+that we have just seen where we have all
+of our image data that we will use later
+on for training purposes. We don't do
+any fancy stuff here like archiving
+files or handling schema evolution. This
+we will look into next as well. But for
+now, let's just execute the most minimal
+configuration right here. Typically, if
+you work with autoloader outside of the
+declarative pipelines, you would need to
+make some additional configurations such
+as setting the checkpoint location, the
+schema location. Here it's all handled
+for you. So really all you have to do is
+specifying where you want to read from
+and that you want to read in the format
+cloud files and that's it. There we go.
+The cluster is up and running. The
+pipeline is being executed and we are
+reading from our object store and we
+will probably see here a few written
+records. There we go. We have 56 written
+records right here. So this means we
+have now successfully created this table
+and have read the data from the object
+store. Now, if we would add more data
+into this S3 bucket and re-execute this
+pipeline, it would automatically figure
+out what has already been read and only
+read and ingest the new files right
+there. We will see this for the next
+table in action. But for now, let's also
+quickly check if the table was actually
+created in the Unity catalog. For this,
+we will jump over here and have a look
+into our browse. And there we go. We see
+the training images. We see that we have
+the path right here. We have the content
+which is the actual image representation
+in binary format and also some
+additional metadata right here. Cool.
+Schema Evolution
+That was a very simple example. Now
+let's look into some more advanced
+autoloader functionalities as well.
+First of all for the next table let's
+look into schema evolution. Right. So we
+ingest now uh the meta data of the
+images and we will look into how we can
+handle schema of evolution for for
+example CSV files. For this first of all
+let us place some code here and this is
+really exactly the same code that we
+have seen earlier just pointing to
+another subfolder in our volume and
+creating another table. So this will be
+the claims images metadata and in this
+case it's CSV files. Right? So for now
+it's exactly the same what we have seen
+right now. And here I want to elaborate
+a bit more on the schema evolution. So
+one parameter that you do not see here
+because it's set by default is this one
+right here. So cloud files schema
+evolution is set by default to add new
+columns. So this means if I run this
+pipeline to ingest the data and then on
+the next run I have added for the new
+records another column right it will add
+it automatically also to our delta table
+schema. So now let's try this out right
+we will run this pipeline right here and
+we will create this claims images meta
+table and for now we keep it with the
+default with like the schema evolution
+mode set to the add new columns right
+here and there we go this one is also
+being created
+and uh instead of going into the unity
+catalog we can also just see some sample
+data right here so there we go we have
+this table successfully inserted right
+here. And now what we want to do is we
+want to add some more data into the S3
+bucket with a new column. And this data
+will look like this here but with the
+difference that it will have another
+column and we will see how the behavior
+is with this default configuration first
+of all and then we will make some
+changes to that. Now to do that I will
+do the following. I will go to the Unity
+catalog. Go into the claims metadata and
+then right here I will upload some data.
+So I can do this right from data bricks
+instead of going through the AWS
+console. In there I will upload a record
+right here. We will also have a look
+into it in a second. So if we open it we
+see it's just one record. It looks
+exactly the same like the previous ones
+with the exception that here we have
+this new column right and we specify it
+as a value new column value one. Now
+let's get back to our pipeline and here
+we just re-execute this one and see what
+happens. So now we see for the first
+time we see the actual autoloader
+functionality as it knows now okay the
+first file we have already processed and
+ingested and now it will only ingest
+basically the new file. So for written
+records we should see just one right
+here as our new file has only one
+record. Right? There we go. This is
+exactly what we see right here. And now
+if we have a look at the data again, we
+will see that we have a new column here
+that is set to null for most of the
+records. But there should be one record
+that has a value here. The one that we
+just uploaded into the S3 bucket. Now
+let's check this as well. For this, we
+just open the SQL editor and then we
+just query for this record that we have
+ingested. And there we go. We see it
+actually has a value right here. And all
+the other records from our initial load,
+they don't have this column here
+specified. And this is exactly the
+default behavior. Now, if we want to
+change this, right, we can do the
+following. So here instead of specifying
+add new columns for this schema
+evolution mode we will put in rescue
+right here. And now we will see how this
+behaves with a new file being uploaded.
+For this again same procedure we go into
+our volume and we upload yet another
+file right here. Let's see how it looks
+this time. It's again just one new
+record but in this case it does not only
+have this new column here. New column
+one. It has even one additional column,
+new column two that was not there
+before, right? Not even in the second
+file that we uploaded that already had
+this new column one. This new column 2
+is something completely new. Now with
+the previous behavior, it would again
+just put this new column into the actual
+schema and then it will put lots of null
+values for all the records except this
+one that we just inserted. But now as we
+changed the configuration to put the
+schema evaluation mode to rescue it will
+behave a bit differently. So now if we
+re-execute this one again we have one
+record written. So this is the new one
+coming from our latest file. And now if
+we click into the data we see here that
+we do not have this new column 2.
+Instead what happened? It will use now
+this rescued data column right here to
+put in all the values that are different
+from this other schema that we have
+right here. Now to make this more clear,
+we go again back to our SQL editor. And
+there we query now for this new record.
+And you will see this one has the new
+column two this time in the rescued data
+right here. Right? And any new column
+that we will add will land now in this
+rescued data one right here instead of
+adding actual new columns as we have
+seen with the default previous behavior.
+And this is how you can control
+basically schema changes using
+autoloader. All right. Now if we check
+the unity catalog we have not only the
+training images but also the claims
+images metadata successfully ingested
+right here. And now as a last step the
+Archiving with cleanSource
+accident images are missing. And for
+this we want to explore this new
+autoloader functionality to
+automatically either archive or delete
+files once they have been processed. And
+for this we see in the volumes if we
+click into the claims one again we see
+we have already created this archive
+subfolder right here which is currently
+empty. This is where we would like to
+move our already processed data on
+automatically. Why would we do that? So
+this could be either a place where we
+temporarily keep all the files and then
+later on we delete them or this could be
+just a place where we archive everything
+and this could be another storage tier
+that is cheaper on the cloud level.
+Right? In this case we will not use the
+declarative pipelines anymore but we
+will use plain pispar code for this.
+Let's switch to a notebook and let's see
+how it looks like. So first of all I
+will paste bunch of paths and
+configurations and stuff. So I have here
+different kind of paths. I have the
+source path. I have the archive path and
+you will also see we have this metadata
+path right here. Because currently we
+were working with declarative pipelines.
+Lots of things were abstracted away from
+us that are typically needed to
+configure in this autoloader pipelines.
+If you were working with the normal
+imperative spark code, you will see this
+in a second. So now what I would like to
+do is I create a new variable right here
+where I paste all the new configurations
+that we now need to achieve this
+archiving mechanism. For this we use the
+new cloud files functionality called
+clean source and it has three different
+parameters that we need to set here.
+First of all, the clean source type
+right here, we set it to move, right?
+Because after the data has been
+processed, we want to move it to another
+destination. The other alternative here
+would be to set this to delete. So after
+files have been processed, you would
+like to delete them. In this case, we
+would like to move them. Then for the
+next parameter, we specify after which
+time we would like to move them. In this
+case, we set it to 1 minute. So 1 minute
+after we process the files, we would
+like to move them to the destination
+that we specified here, the move
+destination. And this will be the
+archive path right here. And this is
+what we just have seen in the volumes.
+Basically the subfolder called archive.
+And then we paste a bunch of more code
+here to do the read and to write it out
+into a target table. It looks very
+similar to the declarative pipeline code
+that we have seen. We are also pasting
+here those archive configurations that
+we have just set. And for now we will do
+it in um available now true mode meaning
+we execute this on a batch right it will
+not run in a continuously running
+streaming pipeline. So now I will just
+execute it right here and we will see
+what happens. All right the pipeline did
+just run now. We see it was successfully
+executed. And now if we check the Unity
+catalog and go to the browse schema and
+then refresh it, we should see right
+here this new claim images table that we
+have now. Now if we check the claims
+volume right here and then we go into
+the archive, we see our files have
+actually been moved right here. Right?
+So it all worked successfully. Sometimes
+you need to re-execute this pipeline
+because here the retention duration is
+set to 1 minute. Right? And if this is
+taking less than a minute, then it would
+probably not move the files and you
+would need to re-execute this whole
+pipeline. But in like a production
+scenario where you anyways probably have
+a scheduled pipeline that runs maybe
+several times per day, then in one of
+the runs, it would definitely pick up
+this task and move the files to the
+Outro
+destination target. All right, and that
+was already it. So in this video you saw
+how you can use autoloader to very
+efficiently load incremental data from
+an object store and also do things like
+archiving your processed data
+automatically. Now in the last few
+videos we have ingested data from a
+streaming source from a relational
+database and now also from an object
+store.
