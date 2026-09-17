@@ -1,16 +1,18 @@
 # smart_claims_dev
 
 A motor-insurance claims lakehouse, built incrementally from a Databricks end-to-end tutorial
-(transcript in `docs/transcript.txt`). The finished system is meant to take a claim, pull in
+(transcripts in `docs/`). The finished system is meant to take a claim, pull in
 telematics from the vehicle, policy data from SQL Server and damage photos from object storage,
 classify the damage with an ML model, and surface the result through dashboards, Genie, and a
 Databricks App over Lakebase.
 
-**What exists today is Part 1: streaming telematics ingestion into bronze.** Everything else is
-scaffolding or empty. See [Status](#status) for the precise line.
+**What exists today is parts 1 and 2: five bronze tables.** Telematics arrives as a stream;
+customer, policy and claim arrive as change data from a stand-in for the SQL Server the tutorial
+uses, because the real connector needs compute this workspace does not have. Silver and gold are
+empty. See [Status](#status) for the precise line.
 
-The whole thing is a Declarative Automation Bundle — catalog, schemas, volume, pipeline and jobs
-are all declared in `resources/` and deployed with `databricks bundle deploy`. A clean checkout
+The whole thing is a Declarative Automation Bundle — catalog, schemas, volume, pipelines and
+jobs are all declared in `resources/` and deployed with `databricks bundle deploy`. A clean checkout
 reproduces the entire structure; nothing was clicked into existence.
 
 
@@ -19,22 +21,41 @@ reproduces the entire structure; nothing was clicked into existence.
 ```
 resources/            Everything deployable, one file per concern
   catalog.yml           Schemas + the landing volume (NOT the catalog -- see below)
-  *.pipeline.yml        The telematics pipeline
-  telematics_generator.job.yml   Simulated producer
+  smart_claims_dev_etl.pipeline.yml   Telematics streaming ingestion    (part 1)
+  telematics_generator.job.yml        Simulated Kinesis producer        (part 1)
+  source_cdc.pipeline.yml             CDC ingestion into bronze         (part 2)
+  source_database.job.yml             Simulated SQL Server, seed+mutate (part 2)
   sample_job.job.yml    Template leftover, see Status
 src/
-  jobs/generate_telematics.py        Writes Kinesis-shaped records into the landing volume
+  jobs/
+    generate_telematics.py           Kinesis-shaped records into the landing volume
+    simulate_source_database.py      Seeds and mutates the simulated SQL Server
   smart_claims_dev_etl/
-    utilities/telematics_source.py   One reader, four sources, one column contract
-    transformations/                 One file per dataset; the pipeline globs this folder
+    utilities/
+      telematics_source.py           One reader, four sources, one column contract
+      cdc_source.py                  Change-feed read + AUTO CDC flow
+    transformations/                 Globbed by the TELEMATICS pipeline
+    transformations_dev/             Globbed by the CDC pipeline
   smart_claims_dev/                  Shared package, installed as a wheel
-docs/transcript.txt   Source material for Part 1
-tests/                Unit tests for the shared package
+docs/
+  transcript_1.txt      Source material for part 1
+  transcript_2.txt      Source material for part 2
+  001-source-cdc-simulation/    Spec, plan, and the Lakeflow Connect swap file
+tests/                  Unit tests for the shared package
 ```
 
-`utilities/` sits outside `transformations/` deliberately: the pipeline's glob executes
-everything under `transformations/**`, and a module that defines no datasets must not be in
-there.
+**Two pipelines, two folders.** A pipeline executes every file its glob matches, so the two
+pipelines' datasets must not share a directory -- otherwise both would declare the same tables,
+and whichever pipeline runs second fails because another already owns them. `transformations/`
+and `transformations_dev/` are siblings rather than nested, because `transformations/**`
+requires that exact directory name followed by a separator and so never reaches the sibling.
+That is what let part 2 be added without editing part 1 at all. (`**` is not optional: the
+pipelines API rejects a single asterisk outright, so `transformations/*.py` is not a route to
+the same isolation.)
+
+`utilities/` sits outside both globs deliberately -- it defines no datasets, and being outside
+is also what lets both pipelines import from it. The two pipelines share one `root_path`, which
+is what puts it on their import path; separate roots would mean a second copy.
 
 
 ## Unity Catalog layout
@@ -42,10 +63,14 @@ there.
 ```
 smart_claims_dev
 ├── landing   volume `telematics_raw`  -- files, no tables
-├── bronze    telematics, telematics_test
+├── source    customer, policy, claim  -- the simulated SQL Server
+├── bronze    telematics, telematics_test, customer, policy, claim
 ├── silver    empty until a later part
 └── gold      empty until a later part
 ```
+
+`source` is not a medallion layer. It stands for a system *outside* the lakehouse -- the SQL
+Server part 2 ingests from -- and it disappears the day Lakeflow Connect replaces it.
 
 `landing` holds files that have not become Delta yet; the medallion layers hold tables. In the
 `dev` target every schema name is rewritten to `dev_<your_username>_<layer>`, so two people can
@@ -95,8 +120,32 @@ Records written = `num_batches x events_per_batch`. Wall clock is roughly
 swallows the lot in one or two micro-batches, and the row count jumps in a single step — same
 data, no visible streaming.
 
+### Part 2 — source database, then CDC
 
-## The two bronze tables
+Same shape: produce, then ingest. Steps 1 and 2 are once; 3 and 4 are the loop.
+
+```bash
+# 1. Seed the source tables (7,000 customers / 12,000 policies / 13,000 claims)
+databricks bundle run source_database -t dev --profile <PROFILE> --notebook-params mode=seed
+
+# 2. Ingest the snapshot
+databricks bundle run source_cdc -t dev --profile <PROFILE>
+
+# 3. Change the source -- insert a policy, update a claim, delete a customer
+databricks bundle run source_database -t dev --profile <PROFILE> --notebook-params mode=mutate
+
+# 4. Propagate the changes
+databricks bundle run source_cdc -t dev --profile <PROFILE>
+```
+
+Add `churn=50` to step 3 for bulk change volume rather than three rows.
+
+Step 1 refuses if the tables already exist. That is deliberate: reseeding drops and recreates
+them, which restarts their change feed at version 0 and invalidates the pipeline's checkpoint.
+Override with `force=true` only alongside a full refresh of `source_cdc`.
+
+
+## The two telematics tables
 
 Both read the same stream and hold the same number of rows. The difference is the point.
 
@@ -111,6 +160,68 @@ it has made its point. Side by side they are the before-and-after of the parsing
 Everything in `telematics` is typed `STRING` on purpose — real typing belongs in silver. The
 payload is parsed as `MAP<STRING, STRING>` so the producer can add fields without the schema
 knowing them up front, and `raw_json` is kept so nothing is lost if it does.
+
+
+## The simulated source database
+
+Part 2 of the tutorial ingests three SQL Server tables with **Lakeflow Connect**: an ingestion
+gateway reads the database's transaction log into a volume, and a managed ingestion pipeline
+upserts from there into bronze. Neither half is available here.
+
+- There is no SQL Server. Unlike part 1's missing Kinesis stream, there is nothing to simulate
+  at the connector boundary -- Lakeflow Connect's whole job is reading a real transaction log.
+- The gateway runs on **classic compute**, which the transcript states outright: *"currently
+  not available yet in serverless, so this will be always a classic compute VM."* This
+  workspace has none.
+
+So this project reproduces the part that transfers -- **CDC semantics** -- on serverless:
+
+```
+source_database job              source schema (stands in for SQL Server)
+  mode=seed    → create+load     customer 7,000 · policy 12,000 · claim 13,000
+  mode=mutate  → INSERT/UPDATE/  delta.enableChangeDataFeed = true
+                 DELETE                        │
+                                               │  Delta change feed
+                                               ▼
+                                 source_cdc pipeline
+                                   temp view reads the feed
+                                   create_auto_cdc_flow, SCD Type 1
+                                               │
+                                               ▼
+                             bronze.customer · bronze.policy · bronze.claim
+```
+
+Enabling the change feed on a Delta table is the exact analogue of the transcript's
+`sys.sp_cdc_enable_table` on SQL Server. The feed is real, so nothing downstream is faked --
+only its origin differs.
+
+**How the pieces earn their keep**
+
+`_commit_version` is Delta's answer to a log sequence number, and it is what `sequence_by`
+orders changes on. That is why the mutate job issues each change as its own statement: one
+commit per change, unambiguously ordered.
+
+`create_auto_cdc_flow` takes the *name* of a view, not a DataFrame, so every dataset declares a
+`@dp.temporary_view` over the change feed first and passes its name.
+
+`except_column_list` drops `_change_type`, `_commit_version` and `_commit_timestamp`, so bronze
+carries exactly the source's columns and nothing else.
+
+Tables are built in three commits -- create empty, enable the feed, then load -- never a
+`CREATE TABLE AS SELECT`. Delta guarantees the feed only for commits made *after* the property
+is set, and a CTAS collapses those into one version. Get it wrong and the pipeline succeeds
+while producing three empty tables, which is worse than a crash.
+
+**SCD Type 1**, so a delete removes the row. That is what makes the transcript's check —
+querying the deleted customer and getting nothing — the correct assertion. History belongs in
+silver.
+
+**The swap.** `docs/001-source-cdc-simulation/lakeflow-connect-swap.yml` holds the real
+Lakeflow Connect resources, parked in `docs/` so the bundle's `resources/*.yml` include never
+picks them up. When a SQL Server and classic compute exist, move it into `resources/`, delete
+`source_database.job.yml` and `source_cdc.pipeline.yml`, and drop the `source` schema. The
+bronze tables keep their names and columns, so nothing downstream of bronze notices. The full
+reasoning is in `docs/001-source-cdc-simulation/spec.md`.
 
 
 ## Source modes
@@ -163,12 +274,18 @@ Done:
 
 - Unity Catalog structure: catalog, four schemas, landing volume
 - Simulated Kinesis producer writing into the landing volume
-- Streaming ingestion into two bronze tables, four interchangeable sources
+- Streaming ingestion into two telematics bronze tables, four interchangeable sources
 - Continuous-pipeline demo, verified at 1720 rows
+- **Part 2, simulated:** CDC from a stand-in source database into three more bronze tables.
+  Verified — bronze matches source row-for-row, the transcript's insert/update/delete test
+  passes, no change-feed metadata leaks into bronze, and `policy.chassis_number` joins part 1's
+  ten-vehicle telematics fleet
+- The real Lakeflow Connect resources, written and parked in `docs/`, ready to swap in
 
 Not done — later parts of the tutorial:
 
-- SQL Server ingestion via Lakeflow Connect
+- Lakeflow Connect against a real SQL Server (blocked: no database, no classic compute)
+- SCD Type 2 history on the CDC tables
 - Damage photos from object storage via Auto Loader
 - Damage-classification model, AI/BI dashboards, Genie, Lakebase, Databricks Apps
 - `silver` and `gold` are empty
