@@ -36,6 +36,22 @@ variables:
     description: Volume under the landing schema that the simulated stream writes into.
     default: telematics_raw
 
+  # --- Object storage, Part 3 ----------------------------------------------------------------
+  # The transcript reads two EXTERNAL volumes backed by an S3 bucket somebody else filled. These
+  # are MANAGED, because this account uses Unity Catalog Default Storage. Auto Loader cannot tell
+  # the difference -- it reads a /Volumes/... path either way.
+  training_images_volume:
+    description: >-
+      Car-crash images, used in a later part to train the damage-severity classifier. Read as
+      `binaryFile` -- the minimal Auto Loader case, with no schema to infer.
+    default: training_images
+
+  claims_volume:
+    description: >-
+      Per-claim customer uploads: accident photos under `images/`, their CSV metadata under
+      `metadata/`, and `archive/` for files Auto Loader's cleanSource has finished with.
+    default: claims
+
   source_schema:
     description: >-
       Stands in for the SQL Server database Part 2 ingests from. Holds three Delta tables with

@@ -68,3 +68,30 @@ resources:
         Stands in for the Kinesis data stream. The generator job writes Kinesis-shaped records
         here as newline-delimited JSON under `events/`, and the pipeline consumes them
         incrementally with Auto Loader.
+
+    # --- Part 3: object storage ---------------------------------------------------------------
+    # The transcript's equivalents are EXTERNAL volumes pointing at an S3 bucket. These are
+    # MANAGED, because this account uses Unity Catalog Default Storage. The practical difference
+    # is teardown: `bundle destroy` removes a managed volume's files, where an external one would
+    # leave the bucket untouched.
+
+    training_images:
+      catalog_name: ${var.catalog}
+      schema_name: ${resources.schemas.landing.name}
+      name: ${var.training_images_volume}
+      volume_type: MANAGED
+      comment: >-
+        Car-crash images for training the damage-severity classifier in a later part. Read with
+        `cloudFiles.format = binaryFile` -- the minimal Auto Loader configuration, with no schema
+        to infer and nothing to evolve.
+
+    claims:
+      catalog_name: ${var.catalog}
+      schema_name: ${resources.schemas.landing.name}
+      name: ${var.claims_volume}
+      volume_type: MANAGED
+      comment: >-
+        Customer uploads per claim. `images/` holds the accident photos, `metadata/` holds the
+        CSVs describing them, and `archive/` receives files once Auto Loader's cleanSource has
+        finished with them. Those subfolders are plain paths, not Unity Catalog objects -- they
+        are created by whatever writes into the volume.
