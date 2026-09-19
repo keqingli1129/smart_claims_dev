@@ -1,0 +1,646 @@
+Intro
+Data transformations or ETL pipelines
+are one of the core capabilities of
+every data and AI platform. For big data
+in particular, Apache Spark is the go-to
+framework for distributed data
+processing and the databicks founders
+are actually the original creators of
+Apache Spark. Therefore, obviously,
+Databicks is a great platform to run
+your Spark code to transform your data
+across the Medallion architecture. Now
+to make data processing pipelines
+easier, more reliable and also more
+performant, databicks a few years ago
+introduced an ETL framework called Delta
+Life Tables which has recently been open
+sourced as part of the Apache Spark
+project and it also got a rename to
+LakeFlow declarative pipelines or Spark
+declarative pipelines as well as some
+major updates within the framework
+itself. In my opinion, declarative
+pipelines offer the following major
+benefits. First of all, they unify batch
+and stream processing as they provide
+this declarative interface to write your
+pipelines. So you can easily switch
+batch and streaming whenever your
+requirements change. Additionally, you
+get data quality functionalities right
+built into the framework and declarative
+pipelines are really built for
+incremental processing. So it becomes
+super easy to write those pipelines
+where you always only propagate your
+incremental new data changes throughout
+your whole pipeline and you can also do
+things like change data capture and
+slowly changing dimensions with just a
+few lines of code. After you've
+implemented your data processing
+pipeline, you probably want to
+orchestrate everything. And for this
+databicks offers lakeflow jobs which was
+previously known as workflows to
+orchestrate your whole pipeline to put a
+schedule on top of it to define triggers
+job parameters and much more. In this
+video we will use lakeflow declarative
+pipelines to build our silver and gold
+tables by implementing pipelines to
+clean the data to apply some data
+quality checks and then to join it to
+make it ready for consumption by
+downstream applications. This is the
+fourth part of an end to end data bricks
+project. So check out the first three
+parts if you're interested where we
+ingested data from a SQL server also
+streaming data from a message bus as
+well as from the object store. Now let's
+jump right into databicks and get
+started. All right, let's go. Here we
+Data Quality & Cleaning - Silver Layer
+are within databicks and as always let's
+quickly check our catalog structure. We
+are still operating in the smart claims
+deaf catalog if you have watched the
+previous videos and today we will be
+mainly focusing on the silver and the
+gold schema as we are building the
+cleaning transformations as well as the
+aggregations. So let's quickly check
+maybe again what we have already here
+within the landing schema. We have all
+the volumes right. So here we have the
+volumes that were created by our
+ingestion gateway to ingest the SQL
+server data as well as the volumes that
+we created to upload the images. And
+then in browse we created all those
+different tables for the claims for the
+claim images for the customers policy
+teleatics and all of that was ingested
+in the previous parts. And now we would
+like to transform this data. We would
+like to clean it and we want to put it
+into a structure so that we can consume
+it by downstream applications and for
+this we will clean the tables and put it
+into the silver one which is currently
+empty and then we will also have this
+gold schema where we will put the
+aggregated data into. Now for this we
+would need to write some code and for
+that we will again create some lakeflow
+declarative pipelines. So we click on
+new ETL pipeline right here. This time
+we call it transformations
+and then we select our catalog and the
+default schema this time should be maybe
+the the silver one and we will again use
+the new lakeflow pipelines editor and
+for now let's start with an empty file.
+Now let's give this some structures.
+Let's create some separate files for the
+different stages. We will create two new
+files for bronze to silver and for
+silver to gold. Now let's start with the
+actual implementation of the browse to
+silver pipelines. For this first of all
+we will import some functions as well as
+defining our catalog brows schema and
+silver schema as we will refer to this
+several times within this file. By the
+way, this could be also later on
+abstracted away into pipeline
+configurations. But for now, let's just
+hardcode it uh right into here. And now
+we can start cleaning our data. And
+let's start maybe with the claims data
+set. To do that, let's maybe quickly
+first open a new tab to have a quick
+look into the data set. Right? So we
+query from the browse claim table and
+then we see how it currently looks like.
+It is already in a quite clean state.
+But what we see here for example, we
+have lots of dates inside here like the
+license issue date and they are actually
+in string format. So we would like to
+convert them into date format. And this
+is one of the typical cleaning
+operations that you do from bronze to
+silver. And then we would also like to
+do some data quality checks to uh make
+sure that very important columns such as
+the claim number for example they are
+not zero right they have a specific
+value and then we could also apply some
+other checks on the other columns using
+the builtin data quality functionalities
+within the declarative pipelines. So
+let's do that. So we paste here our
+initial code. This is just defining
+again the name of the table. In this
+case we will put it into the silver
+schema. We will call it exactly the same
+as we call it in the bronze schema. So
+again it's just called claim but this
+time in the silver schema. We will set
+some table properties to enhance the
+metadata right here. And now we will add
+our data quality checks. And for this we
+can leverage this builtin data quality
+functionalities within the declarative
+pipelines. So what we do here for now we
+could add much more here but we will
+just focus on two quality checks for now
+per table and for this claim table we
+check two things right. First of all
+this is the syntax how you create those
+data quality checks within the
+declarative pipelines. So you just
+specify right before the table
+definition you specify expect all for
+example if you have multiple checks and
+in this case I am defining two data
+quality checks and then here I specify
+the actual logic that is used to perform
+this data quality check. So here it's
+super simple. I'm just saying claim
+number is not null. And then I have a
+second check checking for the valid
+incident hour. Right? We have this
+column called incident hour. And I just
+want to make sure it's between 0 and 23
+to make sure this is not some weird
+number that does not make sense. So now
+you might be wondering, okay, what if
+one of those data quality checks right
+here is not passing, right? So what if I
+have a claim number that is indeed a
+null or what if I have an incident hour
+that is maybe 45 right the default
+behavior as I just specified here expect
+all is to give me a warning right I will
+see later on in the user interface there
+were several records maybe out of the
+thousand records that I ingested maybe
+10 of those did not pass this data
+quality check and then I will see
+visually as a warning, right? But maybe
+that's not enough. Maybe I want to have
+different actions based on the results
+of these data quality checks. So what I
+could do here as well is instead of
+saying expect all, which just would give
+me the warning, I could also say expect
+all or drop. So actually for those
+records that do not pass these data
+quality checks, now it would drop the
+record out of the target table. And this
+is most likely what we would like to
+achieve for most of the use cases. There
+is one more alternative that we could
+do. So instead of saying expect all or
+drop, we could also say expect all or
+fail. So now if one of the records of my
+source table does not pass one of those
+two data quality checks, then it would
+fail the whole pipeline. If I would want
+to make sure okay if any of my input
+records something is not passing those
+two checks then maybe I don't want to
+continue at all I I first want to fix on
+my source system what the problem may be
+then you could also specify this
+behavior right here for our use case we
+go by expect or drop for now and now we
+can go ahead and specify what we would
+like to check so first of all we are
+reading in our brows table right here,
+right? Performing a read stream
+operation and then we are returning this
+browse table with a couple of
+modifications on top and these are our
+data quality checks that we perform
+right here. So if we make this a bit
+bigger you can see for this table our
+main transformations are adjusting the
+date format and this is also very
+typical. Also in a lot of the cleaning
+pipelines, you often mainly do some data
+quality checks plus you do some data
+type transformations to put everything
+into proper data formats that you expect
+down the road. So here we are making
+those transformations on three different
+columns on the claim date on the
+incident date as well as on the license
+issue date. And as all of them have a
+slightly different date format, you see
+here that I specify. Okay, in this case
+for the incident date, it looks like
+this currently. And for the license
+issue date, it's like the other format
+that you can see right here. The rescue
+date is something we got out of our
+first ingestion pipeline if you have
+followed the last video when we used
+autoloader. And here we are dropping
+this for our silver table. Now before we
+add all the other data quality checks
+for the other pipelines, let us quickly
+run this and see what the outcome looks
+like especially with our data quality
+checks that we apply now. There we go.
+The pipeline is being executed and we
+should see the results in a second.
+There we go. So now we have created our
+silver table. We can have a look into it
+and look at the preview tab of this
+lakeflow declarative pipelines. And now
+you see already here the icon. And also
+if we hover over it, you see the claim
+date is now a proper date format. And
+what we could also do is we could go
+back right here in this overview. And
+then we could have also a look here into
+the expectations column. If we click
+into this, we see an overview of our
+data quality checks that we performed.
+So we see in this case 100% of the
+source records were written into the
+target table. So all of those quality
+checks passed. Basically none of my rows
+that have an unvalid claim number or an
+incident hour. So nothing was dropped.
+But if I would have some records right
+here, I would see them right in this
+overview and they would not appear in my
+cleaned silver table right here. All
+right. Now let's repeat what we have
+done for this claim table also for all
+of our other tables. I will not go into
+the detail for all of those. I will just
+show you some other common data cleanup
+steps for the other tables as well. So
+now let's maybe continue with the policy
+table as this is also very
+straightforward here. I will just copy
+over all the code. So again it's super
+straightforward. All we do here is we
+are checking for a valid policy number.
+And here we we don't have a date that we
+would like to clean. But here what we do
+is with this premium column that we have
+right here. So this one does have like
+um values that could be negative. But in
+the clean version I would always like to
+have only the positive values. So I'm
+applying this absolute function right
+here to um from the negative records
+also store the the positive records in
+this in this table. Now maybe let's also
+have a look into our customer cleanup
+operations. Here we are doing a few more
+things. So if I just paste this right
+here again going quickly from the top to
+to the bottom. I perform a check on the
+customer ID. Then I read the browse
+table right here. Actually for the
+customer I have this name column which
+is having the first name as well as the
+last name which I would like to split
+here. So I'm performing some
+transformation logic right here to
+basically get the first name and the
+last name out of this one big string. So
+if we check it out very quickly and
+query the bronze customer table. This is
+what I was referring to right currently
+in the bronze version we have only this
+name column where we put the first name
+and the last name. So here maybe we
+would like to split this and this is
+exactly what we are doing in our
+cleaning pipeline. On top of this, for
+the date of birth column in the customer
+table, we again transform the data type
+to get a proper date right here. And
+then I'm also doing some clean up on the
+actual address column right here. All
+right. Now, I will also paste all the
+other transformations that we do all the
+other cleanup operations. I will put all
+of the code into a git repository after
+this whole series so that you can have a
+detailed look in each and every of those
+table transformations. But yeah, for all
+of them it's really very similar. We're
+doing this data quality check. We are
+adjusting the actual data types of the
+columns and then maybe for some specific
+tables we also apply some logic to do
+further cleanups. So let's not forget
+about our image tables. So here we also
+doing some some cleanup operations on
+the claim images as well as on the
+training images. Now we have put this
+all together and we can again maybe run
+the pipeline and now you also see the
+graph will become a bit bigger as we
+have now lots of tables that we create
+right here and there we go. So we were
+super fast we created all of these
+tables right here all of our silver
+tables. Now if we would move basically
+our ingestion pipelines that we have
+built in the last parts in the last
+videos we could also see uh the full
+graph right over here right but for now
+let's continue like this and we will
+anyways later in the unity catalog
+lineage see the end to end flow of the
+tables coming from the source system and
+then being transformed into bronze into
+silver and now into gold as well and
+gold is what we going to look into next
+Right. So now all of these tables are
+mainly streaming tables that we have
+created. And now we would also like to
+create a couple of materialized views
+actually to have those pre-join tables
+that we can then consume by a BI tool
+for example by PowerBI by databicks AIBI
+dashboards or even from our custom
+downstream applications. for this to
+better structure it. Let's do it in this
+Data Aggregation - Gold Layer
+other file right here. Again, we are
+importing a bunch of things. And we are
+specifying our gold schema right here.
+And now we can go ahead and create our
+transformations. So let's start with a
+super simple one which is the aggregated
+teleatics. Here we are now reading from
+the silver table that we have just
+created in the other file. And now we
+are basically aggregating we are
+grouping by this chess number and then
+we are aggregating on the speed and then
+we're also averaging this this location
+where the actual speed was recorded
+right and this is this is quite typical
+for streaming data you have lots of
+small records and most of the time for
+your actual analytical analysis you
+don't need those super fine granular
+records right for telemetics it could be
+that every second or something It
+captures 10 different records of the
+speed of the the latitude, the
+longitude. So often you aggregate here,
+you put an average and maybe you say
+okay uh in this 10second time frame
+there was this kind of speed in this
+kind of location. Now we would also like
+to pre-join some of the tables that we
+have to create materialized views that
+are basically pre-joined tables and
+whenever something is changing in one of
+the silver tables it will just
+incrementally update this materialized
+view. Right? So here if we create this
+new table in this case it's a customer
+claim and policy join and if we update
+our silver customer table for example it
+will not recomputee this whole target
+table it will only update our
+materialized view based on the new
+customer record we are by the way
+putting here as table properties gold
+for all of our gold tables and here
+again it's a super simple pipeline. So
+we're just reading in the cleaned policy
+claim and customer from our silver layer
+and then we perform this uh join right
+here. We are first joining the claims
+with the policy and then we return the
+full join also including the customer
+information right here. Now let's create
+one final table right here because you
+see here we have now this table having
+the customer claim and policy
+information and then we would like to
+have one final table that actually also
+includes the teleatics information. For
+this we create this very long name here
+customer claim policy teleatics table
+and again we're reading in the table
+that we just created right here. So the
+customer claim policy table and what we
+do here is we are joining it with the
+aggregated telemetics data. All right.
+As I mentioned all the code will be
+uploaded to GitHub so you can have a
+detailed look. And now let's also
+execute this part here so that we have
+the gold tables created as well. Maybe
+also to show you one more thing. So you
+see here now this pipeline failed as I
+don't have this geopy library installed
+on the serverless cluster. So to fix
+this what I have to do basically is I
+have to go into my settings. I have to
+go into the environment right here and
+then then I need to add this dependency
+to also include this custom library into
+our serverless cluster. So I can just
+put here this version for example. I
+save it and then I reexecute it and then
+now it should all work. There we go. The
+run successfully completed now and we
+see here our full graph on the right
+hand side. Again, this is missing the
+the brows tables because we did not put
+them in here yet. Um otherwise it would
+show the whole end to end graph. But for
+now we already see okay we created those
+different tables and you also see the
+input tables are mainly streaming tables
+that we have right here. So those
+optimized delta tables produced by lake
+for declarative pipelines for very high
+performant input. And then we have on
+the next layer is mainly materialized
+views that we use for example to have
+this joint customer claim policy
+telemetics table. And again, this will
+help us to only incrementally
+reprocess this table whenever new
+records come in. Awesome. Now, let's
+maybe also quickly check the Unity
+catalog. And then afterwards, we
+actually bring everything into a proper
+pipeline that we orchestrate and that we
+schedule from time to time. Now, back in
+the Unity catalog, we click into our
+silver and gold schema right here. And
+now we see all of those tables were
+created right there. And we can go ahead
+and what we can also do now as in our
+lakeflow declarative pipeline that we
+just implemented we did not see the full
+lineage because we were building this in
+separate uh parts and in separate
+pipelines basically but now within the
+unity catalog if we click into the
+lineage for example let's take this
+target table right here. So now if we
+click into the lineage right here, we
+see those tables that were created, but
+then we also could potentially see the
+the browse tables right here as well.
+And this is all created for you
+automatically. And you can even check
+this on a column level. So if you click
+into one of the columns within a table,
+you will see exactly where it came from
+and where it went to. Cool. Now let's
+Orchestration
+orchestrate this whole thing. Right. So
+we have created all the code to ingest
+the data to clean it to build the gold
+tables. But for now we just have done
+this once. And what we would like to
+achieve is we would like on a schedule
+maybe each hour for example we would
+like to run this whole pipeline to pull
+data from the different source systems
+meaning pulling data from the SQL server
+that came in the last hour reading data
+from the Kafka stream reading data from
+the object store and then only for those
+new records incrementally
+pre-process them cleaning them and
+creating those gold tables out of it so
+that then our dashboards on top or our
+applications on top they can also then
+access this newly updated data. For this
+we click into the jobs and pipelines and
+then we create here a lakeflow job right
+here. So this is the native
+orchestration solution within data
+bricks. It also got an update recently.
+So make sure you have the new lakeflow
+jobs UI on here which is currently in
+preview. And here we can now stitch
+basically everything together and put a
+schedule on top of it. First of all,
+let's select the first task right here.
+So it's structured in different kind of
+tasks. Here we could select the
+ingestion pipeline and this would
+basically bring us to creating this
+whole lake for connect pipeline for the
+SQL server. Again, as we have already
+created this, we just select ETL
+pipeline right here and we select the
+demo ingestion pipeline. So if you have
+watched the first part, this is what was
+created by our lakeflow connect pipeline
+to ingest the data from the SQL server.
+So we do this and we give it a name. You
+also see here you could add some
+notifications. For example, if things go
+wrong, you could specify some retries.
+So maybe for some of the tasks you want
+to retry them several times before
+actually failing the whole pipeline. But
+for now, we'll just leave it as is. and
+we create this first task. Now here we
+could also add the other ingestion tasks
+such as the pipeline that we have
+written to read from the stream as well
+as the autoloader pipelines that we have
+created to read the data from the file
+system. For now let's leave it with this
+ingest SQL server and next I will also
+show you how to add basically the next
+step. So here we are selecting again ETL
+pipeline as for the bronze to silver to
+gold we also created earlier in this
+part we created this lakeflow
+declarative pipeline to clean the data
+and to join the data. So here we call
+this cleaning and aggregation and we
+select this data transformations
+pipeline and this is pretty much how it
+works. We can also now specify some
+dependencies when when to actually run
+this second task here. So we can say
+okay only if all the previous ones
+succeeded. If I would have different
+separate tasks right here. I could also
+say if at least one succeeded please
+proceed with this here. And then we can
+structure it like this. You see there
+are also lots of other tasks that could
+be used. So for now we were mainly using
+the declarative pipelines here as a
+task. But as you can see here it could
+be also just simply orchestrating a
+notebook, a Python script, a SQL file.
+There is also this DBT integration that
+could be useful. You can put in if and
+else conditions within your
+orchestration pipeline. You could even
+do looping with this for each task right
+here. And you can also even refresh a
+datab bricks dashboard or a PowerBI
+semantic model right from within the
+pipeline. After you have set all of this
+up here, what you would typically do is
+you would create a schedule right here.
+So you would say for example for this
+kind of pipeline it is a scheduled
+pipeline that I would like to trigger
+every hour for example and then this
+whole pipeline would be executed and
+read the new data in from the source
+systems incrementally process it through
+all your different stages and then maybe
+even publish it to a PowerBI semantic
+model for example. Except from this
+scheduled trigger, there is also a file
+arrival trigger. And there is also
+currently in preview a table trigger
+that you could use. All right. And
+that's already it. This is how you would
+set up this whole end to end
+orchestration pipeline to ingest and
+process your new arriving data on a
+Outro
+schedule. Cool. And that was already it
+for this part. So we have seen how we
+can create lakeflow declarative
+pipelines and use its natively built-in
+data quality checks to first of all
+clean our data and also to apply some
+small transformations in this step from
+bronze to silver to fix data types for
+example and then we have also seen how
+we can use those silver tables and then
+create gold level materialized views on
+top where we join the different tables
+together but we still keep this
+incremental way of working and then at
+the end we have seen how we can see the
+end to end lineage as well as how we can
+orchestrate this whole pipeline end to
+end and execute it for example on a
+schedule. 

@@ -1,0 +1,91 @@
+# Transcript section: "Orchestration".
+#
+# The whole project on a schedule: pull whatever arrived from each source since the last run,
+# then clean and aggregate only that. The transcript builds this in the Lakeflow Jobs UI with
+# two tasks -- one ingestion pipeline, one transformation pipeline -- and says the other
+# ingestion pipelines "could also be added here". They exist in this project, so they are.
+#
+# WHAT IS DELIBERATELY NOT A TASK HERE: the three data generators (source_database,
+# telematics_generator, object_storage_generator). They stand in for source systems, and a
+# source system is not part of the pipeline that reads it. There is also a concrete reason
+# beyond tidiness -- `simulate_source_database.py mode=mutate` is not idempotent. It runs
+# `INSERT INTO source.policy VALUES ('POL-999001', ...)` unconditionally, so an hourly schedule
+# would accumulate one duplicate primary key per hour in a table standing in for a SQL Server
+# with a real one. They stay as the separate, manually-triggered jobs they already are.
+#
+# An hourly run with nothing new to ingest is therefore a fast no-op that leaves every table
+# untouched. That is the correct behaviour for incremental processing, not a broken schedule.
+#
+# WHY THE SCHEDULE IS SAFE TO COMMIT: `mode: development` pauses job schedules in the dev
+# target, exactly as it strips `continuous: true` from a pipeline. The hourly trigger below is
+# real in prod and inert in dev. Un-pausing it is a deliberate act, not something a
+# `bundle deploy` does to you.
+
+resources:
+  jobs:
+    smart_claims_pipeline:
+      name: smart_claims_pipeline
+      description: Ingest from every source, then clean and aggregate. The Part 4 orchestration.
+
+      # The transcript: "it is a scheduled pipeline that I would like to trigger every hour".
+      # Paused in dev by mode: development -- see the note above.
+      schedule:
+        quartz_cron_expression: "0 0 * * * ?"
+        timezone_id: America/Chicago
+
+      # An hourly job must not stack runs. If one takes longer than an hour -- a cold start plus
+      # a large backlog will -- the next trigger would otherwise start a second update against
+      # the same pipelines and tables.
+      max_concurrent_runs: 1
+
+      # Set at job level rather than per task: it covers a failure in any task, including the
+      # ones added after this file was written. The transcript points these out on the task
+      # form and leaves them off.
+      email_notifications:
+        on_failure:
+          - keqingli1129@gmail.com
+
+      tasks:
+        # --- Ingest into bronze -------------------------------------------------------------
+        # The transcript's first task: "we just select ETL pipeline right here and we select the
+        # demo ingestion pipeline". Three of them here instead of one.
+        #
+        # No depends_on between them, so the job runs all three in parallel. They read three
+        # unrelated sources -- a change feed, a stream, and a volume of files -- and none of
+        # them reads another's output, so serialising them would only make the run longer.
+        - task_key: ingest_source_cdc
+          pipeline_task:
+            pipeline_id: ${resources.pipelines.source_cdc.id}
+
+        - task_key: ingest_telematics
+          pipeline_task:
+            pipeline_id: ${resources.pipelines.smart_claims_dev_etl.id}
+
+        - task_key: ingest_object_storage
+          pipeline_task:
+            pipeline_id: ${resources.pipelines.object_storage.id}
+
+        # --- Clean and aggregate ------------------------------------------------------------
+        # The transcript's second task, and its dependency discussion: "we can say okay only if
+        # all the previous ones succeeded". That is `run_if: ALL_SUCCESS` -- also the default,
+        # stated explicitly because it is a real decision here rather than an accepted default.
+        #
+        # ALL_SUCCESS and not AT_LEAST_ONE_SUCCESS: gold joins claims to policies to customers
+        # to telematics. If CDC failed, running anyway would publish a gold table built from
+        # stale claims joined to fresh telematics, and nothing downstream could tell. A failed
+        # run is recoverable; a silently wrong gold table is not.
+        - task_key: clean_and_aggregate
+          depends_on:
+            - task_key: ingest_source_cdc
+            - task_key: ingest_telematics
+            - task_key: ingest_object_storage
+          run_if: ALL_SUCCESS
+          pipeline_task:
+            pipeline_id: ${resources.pipelines.transformations.id}
+
+          # The transcript mentions retries on the task form and leaves them off. Set here,
+          # because this is the task with a genuine transient failure mode: a serverless cold
+          # start or a concurrent-update conflict is worth one automatic retry before waking
+          # somebody up at 03:00.
+          max_retries: 1
+          min_retry_interval_millis: 60000
