@@ -11,6 +11,21 @@ the pipeline see the dependency and put these tables in the right order in its g
 Every column is selected explicitly. All three inputs carry a join key, and two carry
 `source_updated_at`, so a `select("*")` would produce duplicate column names that only fail
 later, at read time, in somebody else's query.
+
+OBSERVED FIRST-RUN BEHAVIOUR -- this table is EMPTY after the very first update of a new
+pipeline, and correct from the second update on. Measured: run 1 produced 0 rows, run 2
+produced 12,996, with no code change in between.
+
+The flow ordering was not the problem; the pipeline ran the three silver flows to COMPLETED
+before this one started. What distinguishes this table is that all three of its inputs are
+materialized views being CREATED in that same update, and an MV reading another
+just-created MV appears to plan against the pre-update (empty) snapshot. Note that
+telematics_aggregated.py, whose input is a streaming table, produced its 10 rows correctly on
+run 1 -- so the effect is specific to the MV-on-new-MV case.
+
+In steady state this is invisible: the hourly job re-runs, and the next update fills the
+table. It matters in exactly two situations, and in both the fix is to run the pipeline twice:
+the first deploy to a fresh workspace, and any full refresh.
 """
 
 from pyspark import pipelines as dp

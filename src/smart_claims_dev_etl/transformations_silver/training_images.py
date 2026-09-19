@@ -24,11 +24,14 @@ from utilities.medallion import read_bronze_stream
     comment="Catalogue of training images -- metadata only, bytes left in bronze.",
     table_properties={"quality": "silver"},
 )
+# Note the column names: expectations are evaluated against this dataset's OUTPUT schema, not
+# its input. `size_bytes` is what the select below renames bronze's `length` to, and naming the
+# input column here fails analysis with UNRESOLVED_COLUMN before a single row is read.
 @dp.expect_all_or_drop({
     "valid_path": "path IS NOT NULL",
     # A zero-length file is a failed upload, not an image. It would sail through any check that
     # only looked at the path.
-    "non_empty_file": "length > 0",
+    "non_empty_file": "size_bytes > 0",
 })
 def training_images():
     return (
