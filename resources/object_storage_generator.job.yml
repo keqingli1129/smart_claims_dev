@@ -1,29 +1,27 @@
-# Stands in for whoever fills the S3 bucket. In the transcript the bucket is already populated
-# before the video starts, and the two later files are uploaded by hand through the Databricks
-# UI ("I can do this right from data bricks instead of going through the AWS console"). Both
-# are this job, so Part 3 replays from a clean checkout without anyone clicking.
+# Plays the part of "someone pushes their files into your S3 bucket" -- the premise part 3
+# opens with. The transcript reads an external volume somebody else had already filled; this
+# fills two managed volumes instead.
 #
-# Run order is in the README. Briefly: `mode=seed` once, then `mode=add_column_1` and
-# `mode=add_column_2` interleaved with pipeline runs, because the whole point of each is that
-# Auto Loader sees exactly one new file.
+# Only needed because there is no real bucket. With one, this job becomes irrelevant and the
+# pipeline reads the bucket directly -- nothing else changes, because Auto Loader sees a path
+# either way.
 
 resources:
   jobs:
     object_storage_generator:
       name: object_storage_generator
-      description: Writes training images, accident photos and their CSV metadata into the landing volumes.
+      description: Writes synthetic images and CSV metadata into the landing volumes.
 
       tasks:
         - task_key: generate
-          # No cluster spec -> serverless job compute. The generator is pure standard library
-          # (zlib, struct, csv), so there is nothing to install.
+          # No cluster spec -> serverless job compute.
           notebook_task:
             notebook_path: ../src/jobs/generate_object_storage_files.py
             base_parameters:
-              # Resolved through the resources rather than the variables, so development mode's
-              # dev_<user>_ schema renaming is picked up and the paths match what the pipeline reads.
+              mode: seed
               training_images_path: /Volumes/${var.catalog}/${resources.schemas.landing.name}/${resources.volumes.training_images.name}
               claims_path: /Volumes/${var.catalog}/${resources.schemas.landing.name}/${resources.volumes.claims.name}
-              mode: seed
-              num_training_images: "56"
-              num_claims: "12"
+              # Lets the metadata reference claim numbers that really exist in part 2's data.
+              # Harmless if part 2 was never run -- the generator falls back to synthetic ids.
+              source_schema: ${var.catalog}.${resources.schemas.source.name}
+              random_seed: "7"

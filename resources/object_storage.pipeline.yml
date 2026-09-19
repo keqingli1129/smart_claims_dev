@@ -1,0 +1,43 @@
+# Part 3: incremental file ingestion from object storage with Auto Loader.
+#
+# The transcript's "ingest object storage" pipeline. A THIRD pipeline, not more datasets bolted
+# onto an existing one -- for the same reasons the CDC pipeline is separate: these fail for
+# unrelated reasons, and each stays independently deletable.
+#
+# Its datasets live in transformations_files/, a sibling of transformations/ (part 1) and
+# transformations_dev/ (part 2). A pipeline executes every file its glob matches, so the three
+# sets must not nest -- `transformations/**` requires that exact directory name followed by a
+# separator, which is what keeps three pipelines out of each other's way. (`**` is not
+# optional: the API rejects a single asterisk.)
+#
+# Note what is NOT configured here: no schema location, no checkpoint location. A pipeline owns
+# its datasets' state and supplies both. jobs/archive_claim_images.py leaves the pipeline behind
+# and has to set them by hand -- that contrast is the point of doing it that way round.
+
+resources:
+  pipelines:
+    object_storage:
+      name: object_storage
+      catalog: ${var.catalog}
+      schema: ${var.schema}
+      serverless: true
+      root_path: "../src/smart_claims_dev_etl"
+
+      libraries:
+        - glob:
+            include: ../src/smart_claims_dev_etl/transformations_files/**
+
+      configuration:
+        training_images_path: /Volumes/${var.catalog}/${resources.schemas.landing.name}/${resources.volumes.training_images.name}
+        claims_metadata_path: /Volumes/${var.catalog}/${resources.schemas.landing.name}/${resources.volumes.claims.name}/metadata
+        # addNewColumns is Auto Loader's default; naming it makes the switch to `rescue` a
+        # visible one-word change rather than the appearance of a setting from nowhere.
+        #
+        # Now set to `rescue`. `new_column_one` arrived under the default and is a real column
+        # for good -- rescue freezes the schema from here, it does not retract what the earlier
+        # mode already added. Every unknown field from now on lands in `_rescued_data` as JSON.
+        claims_metadata_schema_evolution_mode: rescue
+
+      environment:
+        dependencies:
+          - --editable ${workspace.file_path}
