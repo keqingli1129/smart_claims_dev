@@ -1,0 +1,42 @@
+# Part 3, final section: ingest the accident photos and archive the files afterwards.
+#
+# A JOB, not a pipeline, and deliberately so. The transcript switches to plain PySpark at this
+# point -- "in this case we will not use the declarative pipelines anymore" -- because the
+# contrast is the lesson: a pipeline supplies the schema location, the checkpoint and the
+# target table, and outside one you name all three yourself. Putting this in object_storage's
+# glob would erase exactly the difference it exists to show.
+#
+# It also keeps cleanSource's file moves out of a pipeline's hands. The pipeline's two datasets
+# re-read their sources on every update; this job mutates its source directory as a side effect
+# of running. Those do not belong in the same update.
+
+resources:
+  jobs:
+    archive_claim_images:
+      name: archive_claim_images
+      description: Ingests claim images into bronze, then has Auto Loader archive the processed files.
+
+      tasks:
+        - task_key: archive
+          # No cluster spec -> serverless job compute. cleanSource needs DBR 16.4 or later,
+          # which serverless satisfies; a classic cluster pinned below that silently ignores
+          # the options and moves nothing.
+          notebook_task:
+            notebook_path: ../src/jobs/archive_claim_images.py
+            base_parameters:
+              # Resolved through the resources, not the variables, so development mode's
+              # dev_<user>_ renaming is picked up and these match what the generator wrote.
+              source_path: /Volumes/${var.catalog}/${resources.schemas.landing.name}/${resources.volumes.claims.name}/images
+              archive_path: /Volumes/${var.catalog}/${resources.schemas.landing.name}/${resources.volumes.claims.name}/archive
+              # Sibling of images/ and archive/, never inside either. Inside the source, Auto
+              # Loader would list its own state files as input; inside the archive, the moved
+              # files would land on top of it.
+              checkpoint_path: /Volumes/${var.catalog}/${resources.schemas.landing.name}/${resources.volumes.claims.name}/_checkpoints/claim_images
+              target_table: ${var.catalog}.${resources.schemas.bronze.name}.claim_images
+              # MOVE, per the transcript. DELETE is the documented alternative and Auto Loader
+              # refuses a retention under seven days for it -- so switching this one word also
+              # means raising retention_duration, or the run fails outright.
+              clean_source: MOVE
+              # The transcript's one minute. Short enough to watch, and legal because MOVE --
+              # unlike DELETE -- has no minimum.
+              retention_duration: 1 minute
