@@ -30,7 +30,7 @@ and then also afterwards archive the
 already processed data using the new
 autoloader functionality called clean
 source. This video is the third part of
-an end toend databicks project. If you
+an end to end databicks project. If you
 want to know all the context about this
 use case and the project we're working
 on, I would recommend you to watch the
