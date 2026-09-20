@@ -25,11 +25,13 @@ resources/            Everything deployable, one file per concern
   telematics_generator.job.yml        Simulated Kinesis producer        (part 1)
   source_cdc.pipeline.yml             CDC ingestion into bronze         (part 2)
   source_database.job.yml             Simulated SQL Server, seed+mutate (part 2)
+  train_damage_classifier.job.yml     ResNet fine-tune + UC register     (part 5)
   sample_job.job.yml    Template leftover, see Status
 src/
   jobs/
     generate_telematics.py           Kinesis-shaped records into the landing volume
     simulate_source_database.py      Seeds and mutates the simulated SQL Server
+    train_damage_classifier.py       Part 5: fine-tune, track, register, batch score
   smart_claims_dev_etl/
     utilities/
       telematics_source.py           One reader, four sources, one column contract
@@ -143,6 +145,40 @@ Add `churn=50` to step 3 for bulk change volume rather than three rows.
 Step 1 refuses if the tables already exist. That is deliberate: reseeding drops and recreates
 them, which restarts their change feed at version 0 and invalidates the pipeline's checkpoint.
 Override with `force=true` only alongside a full refresh of `source_cdc`.
+
+### Part 5 — labelled images, then train
+
+Part 5 needs the training images to carry their label in the filename
+(`train_0007_minor_damage.png`), which images generated before part 5 do not. So steps 1 and 2
+are only needed once, on a volume seeded earlier:
+
+```bash
+# 1. Re-seed the training images, this time with labels in their names
+databricks bundle run object_storage_generator -t dev --profile <PROFILE> --notebook-params mode=seed
+
+# 2. Ingest them
+databricks bundle run object_storage -t dev --profile <PROFILE>
+
+# 3. Fine-tune, register to UC, and batch score
+databricks bundle run train_damage_classifier -t dev --profile <PROFILE>
+```
+
+**The old images do not need deleting.** They stay in the volume and in bronze, which is what
+bronze is for. Silver's `labelled` expectation drops them — an unlabelled filename extracts to
+`""` and fails the check — so `silver.training_images` ends up holding only the labelled set,
+and step 3's join to bronze sees only those. Nothing has to be cleaned up by hand.
+
+Step 3 is the one job in this bundle on a **classic** cluster rather than serverless (a
+single-node `16.4.x-cpu-ml-scala2.12`, pinned), because the ML runtime pre-installs torch and
+scikit-learn. Budget roughly five minutes of cluster start plus ten of training. It also needs
+outbound network access to download the `microsoft/resnet-50` checkpoint from Hugging Face.
+
+**About the accuracy:** expect roughly chance level, and that is correct. The generator draws
+each image's colour with `rng.randint`, independently of the label it writes into the filename,
+so the pixels carry no signal for any model to find. The pipeline is real — real fine-tune, real
+MLflow tracking, real UC registration, real batch scoring — and the data is not. Point it at
+real labelled photographs and the same code produces a real model. The notebook prints this
+next to the confusion matrix so nobody reads the matrix as a result.
 
 
 ## The two telematics tables
@@ -281,14 +317,22 @@ Done:
   passes, no change-feed metadata leaks into bronze, and `policy.chassis_number` joins part 1's
   ten-vehicle telematics fleet
 - The real Lakeflow Connect resources, written and parked in `docs/`, ready to swap in
+- **Part 5:** damage-severity classifier — labels carried in the training filenames and
+  extracted into `silver.training_images`, a ResNet fine-tune tracked in MLflow, registered to
+  `gold.claims_damage_level@prod`, and batch-scored into `gold.damage_predictions`. Written and
+  validated, not yet run end to end. Its accuracy will be chance level by construction — see
+  Part 5 under Run order for why that is the honest outcome and not a bug
 
 Not done — later parts of the tutorial:
 
 - Lakeflow Connect against a real SQL Server (blocked: no database, no classic compute)
 - SCD Type 2 history on the CDC tables
-- Damage photos from object storage via Auto Loader
-- Damage-classification model, AI/BI dashboards, Genie, Lakebase, Databricks Apps
-- `silver` and `gold` are empty
+- Real-time model serving endpoint (the model is registered and aliased, so this is one call —
+  left out because an endpoint bills for as long as it exists)
+- AI/BI dashboards, Genie, Lakebase, Databricks Apps
+
+This Status section still under-reports parts 3 and 4, which are committed but not described
+above.
 
 Template leftovers, kept only because they still deploy cleanly and cost nothing —
 delete them when they start getting in the way:

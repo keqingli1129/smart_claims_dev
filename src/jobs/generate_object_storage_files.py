@@ -173,6 +173,24 @@ def write_csv(path: str, rows: list, columns: list) -> None:
 # MAGIC
 # MAGIC Creates the folder structure -- including the empty `archive/`, which cleanSource needs
 # MAGIC to exist before it can move anything into it.
+# MAGIC
+# MAGIC ## The label lives in the training filename
+# MAGIC
+# MAGIC Part 5 fine-tunes a ResNet on these images, and the transcript gets its labels the same
+# MAGIC way: *"the names always have the label in it"*. So a training image is written as
+# MAGIC `train_0007_minor_damage.png`, and `transformations_silver/training_images.py` pulls the
+# MAGIC label back out of the path with a regex.
+# MAGIC
+# MAGIC The vocabulary is `SEVERITIES` -- the same three values the claim metadata uses for
+# MAGIC `reported_severity`. That is deliberate and not cosmetic: part 5's whole point is
+# MAGIC comparing what the model predicts against what the customer claimed, and two vocabularies
+# MAGIC would need a mapping table nobody would maintain. (The transcript's own labels are
+# MAGIC minor/major/okay, which do not line up with its own metadata. Ours do.)
+# MAGIC
+# MAGIC **What this does NOT do is make the images learnable.** The colour is still
+# MAGIC `rng.randint` per image, drawn independently of the label, so there is no pixel signal
+# MAGIC for any model to find. The label is real; the correlation is not. Part 5's notebook says
+# MAGIC so where the confusion matrix would otherwise imply a result.
 
 # COMMAND ----------
 
@@ -187,9 +205,17 @@ if MODE == "seed":
     print(f"folders ready (including the empty {ARCHIVE_DIR})")
 
     for i in range(1, N_TRAINING_IMAGES + 1):
+        # Round-robin, not rng.choice. 56 images over three classes gives 19/19/18 every run,
+        # where random assignment can leave one class with four members -- and a stratified
+        # train/test split of a 56-row dataset has no way to recover from that.
+        severity = SEVERITIES[(i - 1) % len(SEVERITIES)]
+        slug = severity.lower().replace(" ", "_")
+        # The rendered text is the severity too, so a human who opens the file sees the same
+        # label the pipeline will extract from its name.
         rgb = (rng.randint(40, 215), rng.randint(40, 215), rng.randint(40, 215))
-        write_image(f"{TRAINING_PATH}/train_{i:04d}.png", render_image(f"TRAIN-{i:04d}", rgb))
+        write_image(f"{TRAINING_PATH}/train_{i:04d}_{slug}.png", render_image(severity, rgb))
     print(f"wrote {N_TRAINING_IMAGES} training images to {TRAINING_PATH}")
+    print(f"labels in filenames: {', '.join(SEVERITIES)}")
 
     claims = claim_numbers(N_CLAIM_IMAGES, rng)
     now = datetime.now(timezone.utc).isoformat()

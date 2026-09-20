@@ -1,0 +1,402 @@
+Intro
+While there has been lots of hype around
+generative AI and foundational models,
+there are still lots of use cases for
+traditional machine learning which make
+it into production. Bringing machine
+learning models into production can be a
+struggle and that's why data bricks back
+then created this project called ML flow
+which is a framework to build
+productionready machine learning
+projects with its tracking and all the
+machine learning life cycle
+functionalities. To build a machine
+learning model within data bricks but
+also anywhere else you need to do a
+couple of things. First of all you need
+to ingest and pre-process the data.
+Often you start with exploring the data
+first in a notebook. Then you start your
+first experiments to build the first
+models and those you would ideally like
+to track. Afterwards, once you're happy
+with the result, you typically register
+this model in a model registry to then
+version it there and use this also as
+the central place to pull your model
+from to do either batch inference or
+real-time inference. Additionally, you
+often also want to have things like a
+feature store and also capabilities to
+monitor your model in production to
+automatically, for example, detect drift
+and to kick off automatically a new
+retraining job. All of this is possible
+within databicks and its native ML flow
+capabilities. And in this video, we will
+work on a computer vision project where
+we are basically fine-tuning a ResNet
+deep learning model to classify the
+severity of car crashes. So, we want to
+upload a picture and then our machine
+learning model should give us an
+indication if this damage that we see on
+this car crash is rather a small damage,
+it's a big damage or it's maybe a total
+crash. This is actually the fifth part
+of an end toend datab bricks project
+where we are currently working on to
+build a smart claims application. So if
+you would like to understand all the
+context and the use case, I would
+recommend to check out the other four
+videos. But now let's get started and
+move right into databicks. Now we are
+Training the Model
+here within databicks and let's have a
+quick look into our catalog structure
+and what kind of data we have already
+here. In the last parts of this video
+series, we have created this landing
+bronze, silver, and gold schema where we
+ingested data from various data sources.
+We built those bronze data tables out of
+it. We cleaned it and put it into the
+silver schema. And then we even built
+like aggregations and joints on top and
+put this into the gold schema. In this
+video, we will focus on this training
+images data set which will be the input
+for our machine learning model that we
+train and then we register it into our
+gold schema and then we will first of
+all do batch inference on top of this
+machine learning model as well as
+creating this realtime inference
+endpoint to then use it in our
+downstream application. For this we
+create a new notebook right here. And
+for the cluster that we're going to use,
+we will create a new cluster. And this
+time we will use a machine learning
+cluster as it has lots of those
+frameworks and libraries that we need
+already pre-installed. We give it a name
+and we create it. All right. First of
+all, we install a couple of libraries
+right here. And then we can already get
+started with first of all exploring the
+data that we have and then making some
+pre-processing steps so that we can then
+train the machine learning model. First
+of all the data that we are going to
+read in is coming from the silver schema
+and the data is stored in training
+images. So if you want to know how it
+did land here, how we ingested it from
+object store, then check out the
+previous parts of this video series. Now
+we would like to have a look into it.
+All right, there we go. So we see we
+have in our training images table, we
+have the path where the actual image is
+stored. We have some time data. We have
+the length. And then most importantly in
+the actual content, we have this binary
+here representing the image right here
+in the notebook. It's even visualized.
+But this is just a binary that we have
+stored here. And we have the label
+right. So this is our training data set.
+Therefore, we have labels for the
+different car crashes. And we will use
+these labels to train the machine
+learning model. And in our
+pre-processing step in our last part, we
+basically extracted this label out of
+the path right here as the names always
+have the label in it. Right? Cool. Now
+we can go ahead and first of all we
+would like to resize the image. For this
+we are implementing a small function
+called resize image UDF. UDF stands for
+userdefined function. And we do this
+because we will take as a baseline a
+ResNet deep learning model and we will
+fine-tune it. And this model was trained
+on image sizes of 224.
+And therefore we need to resize all of
+our input images to basically match this
+preferred size for the machine learning
+model so that we can get better results
+out of it. So we create this function
+here. I don't want to go into all of the
+specifics. You will find the code at the
+end of the course in a git repository.
+And then we are using this function and
+apply it to the training data frame
+overwriting the column content and
+applying this resize image UDF function
+on the actual previous content. And then
+we store it in a new delta table called
+training images resized. And then we
+simply execute this right here. Right
+afterwards, we will also quickly double
+check our output table and see if it was
+created properly. And there we go. You
+see it looks very similar. The only
+thing that changed basically is that we
+have transformed the content to the
+proper image sizes. All right. Now our
+input training data is ready. Now to
+train a machine learning model within
+data bricks leveraging MLflow as the
+machine learning life cycle management
+framework we will create first a new
+MLflow experiment. For this we click
+over here click into custom model
+training and give it a name. In this
+case let's call it image claims
+classifier. We click on create right
+here. And there we go. We have this
+empty experiment created. Now back in
+our notebook, we are setting the
+experiment for MLflow by specifying the
+path of the experiment that we just
+created. And then there is one more
+step. So we transform our resized images
+into this data set variable to convert
+it into a format that our machine
+learning model can understand. And then
+we split the data set into a training
+and into a test portion to use this for
+the machine learning model training run.
+Now we need to make a few more
+transformations. So even though we
+resized the image already to the size of
+224 earlier, our current data set still
+has just those JPEG bytes basically and
+neural networks do not understand this.
+they work with tensors and on top of
+that our resonet model that we are going
+to use expects the input to be
+normalized. So this is what we have to
+do as well. Therefore we now do all of
+this right here. So first of all we are
+using as I mentioned already the restnet
+pre-trained model which we would like to
+fine-tune and this is from a hugging
+face basically and then we do all of
+those transformations that I just
+mentioned. All right. So let us execute
+this now as well. So now we have loaded
+this pre-trained image classification
+model that was already trained on lots
+of image data. Now we want to fine-tune
+it basically on our data. For this we
+are loading it right here and we are
+giving it the labels that we expect as
+an output for our classification. In our
+case, the labels are the classification
+of the accident severity. So, is it a
+minor, is it a major damage and so on
+and so forth. And then we can finally
+get started with the finetuning. Right
+now, typically in a more production
+scenario, we would also have this
+hyperparameter tuning step here in
+between now. But for demo purposes, we
+keep it simple. So, we provided the
+training arguments here. And then there
+is one more step before we start the
+fine-tuning. So we basically wrap the
+model in this format that you can see
+right here. So that later on we can
+first of all easily register it as an ML
+flow model in the Unity catalog model
+registry. And we can also easily then
+load it back and do inference on top of
+it. Perfect. And now we can finally go
+ahead again. I will not go through all
+of this code here. But essentially we
+are now starting our fine-tuning model
+training run here. And um the most
+important thing is that we are using ML
+flow here to run this experiment. We
+also give it a name right here. And we
+are also logging all of the training
+parameters so that everything is tracked
+within this MLflow experiment. So that
+also afterwards we can really easily
+understand how we came up with this
+model result. So what kind of parameters
+were used, what kind of data was used,
+the hyperparameters and so on and so
+forth. Everything is locked within ML
+flow and uh now we can go ahead and
+start this training run over here. And
+you will see it will kick off an ML flow
+experiment. So if we click over here, we
+see that within our experiment that we
+created earlier, now this run is being
+kicked off and we can already click into
+it. It will take a while to complete,
+but you already see lots of parameters
+that are used in this training run will
+be tracked here. And this is super
+important to not lose track of what
+you're doing in your experiments. So
+that later on if you bring a model in
+production, you know exactly what kind
+of model you bring into production, what
+the parameters were, what it was trained
+on, what kind of model was used, and so
+on and so forth. And there we go. The
+experiment successfully run. And now
+again to elaborate once more on the
+experiment tracking within data rigs.
+You see all those information here,
+right? You even see like the notebook
+that was used and and much more
+information. Now what you would like to
+do is to register this model that was
+created out of this experiment into the
+unity catalog within databicks to first
+of all govern it also through the unity
+catalog and also this is the way how you
+later on make it accessible for
+inference. Now let's do this. Let's go
+back to our notebook and here we
+register a new model using
+mlflow.register model. So this is
+registering it in our unity catalog and
+we specify the name. So we will store
+this in the gold schema and call it
+claims damage level. And we will also
+give it an alias that this is the pro
+model. And now let's execute this. And
+yeah one more thing that we forgot here.
+So we need to specify that unity catalog
+is basically our model registry. And
+this worked out. So now let's open the
+Unity catalog
+and here within the gold schema we see
+we have now a machine learning model
+called claims damage level. We see this
+alias that we provided with prot and we
+see this is the version number one. And
+if we click into it we can also see that
+this was produced out of this training
+run over here. We have now successfully
+trained our machine learning model and
+we registered it in the Unity catalog.
+Now let's test it out. To test it, let's
+Batch & Real-Time Inference
+do some batch inference using this
+model. To do batch inference within data
+bricks, what you can do is you can
+register a spark udf. So we create this
+new variable here predict damage UDF and
+then we specify here that we want to use
+this model that we just created and
+registered in the Unity catalog. What we
+can do now is we can
+create a new table in the gold schema
+called damage predictions. And for this
+we use our silver initial input images.
+We add a new column called damage
+prediction and then here we are
+leveraging the UDF basically and
+therefore we do batch inference using
+spark and now if we execute this cool
+that was successfully executed now let's
+check out the output table
+and here we see exactly the same table
+that we had earlier but now we have
+included the damage predictions
+basically right so you see the predicted
+labels right over here and we already
+See, some labels are wrong, some are
+right. And to get a better idea of how
+it performed, let's create this results
+table right here. And then we will plot
+a confusion matrix
+right over here.
+And then we will see how our model
+performed. There we go. So we see it it
+did okay, right? We also did not provide
+that much um image data. We did not do
+proper pre-processing, proper
+hyperparameter tuning and stuff like
+that. We just used this as an example.
+And you see here it already recognized
+correctly most of the images. So it put
+16 into major which were actually major
+damages. Uh 13 into minor which were
+actually minor and then also 13 into
+okay which were actually okay. And um
+and we see here some problems right
+where the for example the prediction was
+okay but it was actually labeled as a
+minor damage within our input data set.
+Also we can write from here serve this
+model now in a real time inference
+endpoint right where we provide now a
+name for it. We specify the model and
+then we also specify the hardware where
+this model serving endpoint should run
+on. So is it like a CPU? Is it a big GPU
+for example? And then we uh just click
+here on create and then we have a
+real-time model serving endpoint. And
+this we have already done. So if we
+click right here into this uh real-time
+serving endpoint, we see it's ready to
+use. And now we can actually use this
+endpoint here in our application that
+we're about to build to do real time
+inference. So as soon as the customer is
+uploading their image for the claim, we
+can in real time classify it and compare
+it against whatever the customer is
+claiming the severity of the images.
+Cool. So this is the first part what we
+wanted to do. So our goal is to build
+this smart claims process. Right now, we
+have a machine learning model that we
+can use to classify automatically the
+images that our customers upload when
+they submit their claims for their
+accidents. But on top of that, we also
+want to check some additional things
+before we proceed with the decision if
+you want to refund
+automatically to the customer or if you
+want to do some additional manual
+checks. So one of the checks we do is of
+course this machine learning model. When
+the customer submits their claim, they
+specify how they themselves would
+classify the severity of this car crash
+and then we run this machine learning
+model and compare basically if this
+matches what the customer is saying,
+right? If the customer is saying this is
+a major damage, they want to have
+$100,000 out of us. But actually our
+machine learning model is saying okay
+this is just a very small damage
+basically and it classifies it as like
+okay or minor right then this does not
+match and it would require an additional
+Outro
+check. All right and that was already it
+for this part. So we have seen how we
+can use data bricks to build very easily
+within a notebook a machine learning
+model and most importantly how we can
+use ML flow to first of all to track our
+experiments and also then how to
+register it in the unity catalog and
+then how to do inference on top of it.

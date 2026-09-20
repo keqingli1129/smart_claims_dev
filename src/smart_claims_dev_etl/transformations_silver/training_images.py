@@ -9,7 +9,15 @@ multi-megabyte BLOB dragged through a shuffle. What they want is the catalogue: 
 exist, how big, how recent, and where to find the bytes if they are ever actually needed.
 
 `path` is that pointer, so nothing is lost -- the image is one `spark.read.format("binaryFile")`
-away, on demand, for the handful of rows that need it rather than all of them.
+away, on demand, for the handful of rows that need it rather than all of them. Part 5's training
+notebook is the one consumer that genuinely needs the pixels, and it joins back to bronze on
+`path` to get them.
+
+The one thing silver ADDS is `label`. Part 5: *"in our pre-processing step in our last part, we
+basically extracted this label out of the path right here as the names always have the label in
+it."* That extraction belongs here rather than in the notebook, because a label parsed at train
+time is invisible to everything else -- a dashboard counting the class balance, or a second model
+next year, would each have to re-derive it from the same regex and hope they agreed.
 
 STREAMING TABLE: bronze training_images is Auto Loader append-only.
 """
@@ -32,6 +40,11 @@ from utilities.medallion import read_bronze_stream
     # A zero-length file is a failed upload, not an image. It would sail through any check that
     # only looked at the path.
     "non_empty_file": "size_bytes > 0",
+    # An unlabelled image is not training data. This is also what quietly retires the images
+    # generated before part 5 renamed them -- `train_0036.png` yields an empty label, fails
+    # here, and is dropped, while bronze keeps the row it always had. Nothing has to be
+    # deleted by hand for the table to become correct.
+    "labelled": "label <> ''",
 })
 def training_images():
     return (
@@ -42,6 +55,15 @@ def training_images():
             F.regexp_extract("path", r"([^/]+)$", 1).alias("file_name"),
             F.col("modificationTime").alias("modified_at"),
             F.col("length").alias("size_bytes"),
+            # `train_0007_minor_damage.png` -> `Minor Damage`. Anchored on the four-digit
+            # sequence so an underscore inside the label cannot be mistaken for the separator,
+            # and on the extension so it cannot swallow it. A name that does not match this
+            # shape yields "" rather than a wrong guess, and the expectation above drops it.
+            F.initcap(
+                F.regexp_replace(
+                    F.regexp_extract("path", r"_\d{4}_([a-z_]+)\.[^.]+$", 1), "_", " "
+                )
+            ).alias("label"),
             # Note what is absent: `content`. That is the entire point of this file.
         )
     )
