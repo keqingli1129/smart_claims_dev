@@ -1,0 +1,342 @@
+# Transcript section: "AI/BI Genie".
+#
+# The transcript's pitch for Genie is the gap the dashboard leaves: "maybe you would like to know
+# something specific that is not covered yet by this dashboard... this is where Databricks Genie
+# comes into play". It then creates a space by clicking, attaching tables in the UI. This file is
+# that space as a bundle resource, so it deploys and versions with the tables it reads.
+#
+# WHY serialized_space IS INLINE HERE rather than a `file_path:` to src/genie/*.geniespace.json.
+# Genie has no equivalent of the dashboard's dataset_catalog / dataset_schema fields -- every
+# table is named in full inside the payload. A JSON file referenced by file_path is uploaded
+# verbatim, with no variable substitution, so it would pin this space to whichever schema was
+# hardcoded when it was written. Inline YAML is interpolated by the bundle, which is what makes
+# the identifier below retarget per environment, exactly like the dashboard:
+#
+#   dev  -> smart_claims_dev.dev_keqingli1129_gold.customer_claim_policy_telematics
+#   prod -> smart_claims_dev.gold.customer_claim_policy_telematics
+#
+# The cost is that this file is long and machine-shaped. src/genie/claims_investigation.genie.json
+# is the readable source of truth; scripts/build_genie_space.py regenerates this block from it.
+#
+# ONE TABLE, deliberately. The gold table already joins claim, policy, customer and telematics, so
+# Genie needs no join specs and cannot pick the wrong source. The skill's guidance is that a
+# tighter scope answers better, and the other two gold tables are strict subsets of this one.
+#
+# SEVEN COLUMNS ARE HIDDEN via `exclude: true` -- customer_state is the constant "TX",
+# customer_email is personal data, and five telematics columns are null for all but 8 of 12,996
+# rows. Hiding them stops Genie building answers on fields that look real and are not.
+
+resources:
+  genie_spaces:
+    claims_investigation_genie:
+      title: "Claims Investigation"
+      description: "Ad-hoc questions about motor claims: volume, exposure, severity mix, policy coverage validity, and policy-holder attributes. One row per claim, joined to its policy and the customer who holds it. Covers incidents from February 2021 to October 2025."
+      warehouse_id: "${var.warehouse_id}"
+      serialized_space:
+        version: 2
+        config:
+          sample_questions:
+            - id: "00000000000000000000000000000011"
+              question:
+                - "How many claims do we have for each incident severity?"
+            - id: "00000000000000000000000000000012"
+              question:
+                - "Which incident types have the highest total claim amount?"
+            - id: "00000000000000000000000000000013"
+              question:
+                - "How many claims had an incident outside the policy coverage window?"
+            - id: "00000000000000000000000000000014"
+              question:
+                - "Show me the 10 largest claims that exceed the sum insured."
+            - id: "00000000000000000000000000000015"
+              question:
+                - "What is the average claim amount by policy type and severity?"
+        data_sources:
+          tables:
+            - identifier: "${var.catalog}.${resources.schemas.gold.name}.customer_claim_policy_telematics"
+              column_configs:
+                - column_name: "avg_latitude"
+                  exclude: true
+                  description:
+                    - "Null for all but 8 rows."
+                - column_name: "avg_longitude"
+                  exclude: true
+                  description:
+                    - "Null for all but 8 rows."
+                - column_name: "avg_speed"
+                  description:
+                    - "Mean recorded speed, km/h. Populated for 8 claims only -- see has_telematics."
+                  synonyms:
+                    - "average speed"
+                - column_name: "chassis_number"
+                  description:
+                    - "Vehicle identifier, format CH-00000. One per policy."
+                  synonyms:
+                    - "vin"
+                    - "vehicle id"
+                - column_name: "claim_amount"
+                  description:
+                    - "Amount claimed, USD. Ranges 503 to 59,995, averaging 30,343. This is the exposure measure -- sum it for total exposure."
+                  synonyms:
+                    - "claimed amount"
+                    - "loss amount"
+                    - "exposure"
+                    - "claim value"
+                - column_name: "claim_date"
+                  description:
+                    - "Date the claim was filed. Always on or after incident_date."
+                  synonyms:
+                    - "filed date"
+                    - "reported date"
+                - column_name: "claim_number"
+                  description:
+                    - "Unique claim identifier, format CLM-000000. 12,996 distinct."
+                  synonyms:
+                    - "claim id"
+                    - "claim ref"
+                    - "claim reference"
+                - column_name: "claim_status"
+                  description:
+                    - "Workflow state. Five values: Open, Under Review, Approved, Settled, Denied."
+                  synonyms:
+                    - "status"
+                    - "claim state"
+                  enable_format_assistance: true
+                  enable_entity_matching: true
+                - column_name: "claim_to_sum_insured_ratio"
+                  description:
+                    - "claim_amount divided by sum_insured. Greater than 1 means the claim exceeds what the policy covers -- 4,036 of 12,996 claims (31%) do."
+                  synonyms:
+                    - "loss ratio"
+                    - "claim ratio"
+                    - "over insured"
+                - column_name: "customer_birth_year"
+                  description:
+                    - "Year of birth, for age-band analysis."
+                  synonyms:
+                    - "birth year"
+                - column_name: "customer_city"
+                  description:
+                    - "Six Texas cities: Houston, Katy, Pearland, Sugar Land, Missouri City, Richmond."
+                  synonyms:
+                    - "city"
+                    - "town"
+                    - "location"
+                  enable_format_assistance: true
+                  enable_entity_matching: true
+                - column_name: "customer_email"
+                  exclude: true
+                  description:
+                    - "Contact email. Personal data, not analytical."
+                - column_name: "customer_id"
+                  description:
+                    - "Policy holder identifier, format CUST-00000. 4,767 distinct."
+                  synonyms:
+                    - "customer number"
+                - column_name: "customer_name"
+                  description:
+                    - "Policy holder full name. 4,767 distinct."
+                  synonyms:
+                    - "policy holder"
+                    - "insured"
+                    - "claimant"
+                  enable_format_assistance: true
+                - column_name: "customer_state"
+                  exclude: true
+                  description:
+                    - "Constant 'TX' for every row -- carries no information."
+                - column_name: "customer_zip_code"
+                  description:
+                    - "Postal code."
+                  synonyms:
+                    - "zip"
+                    - "postcode"
+                - column_name: "days_to_report"
+                  description:
+                    - "claim_date minus incident_date, in days. Ranges 0 to 21. A late report is a fraud signal; treat over 14 days as late."
+                  synonyms:
+                    - "reporting delay"
+                    - "lag"
+                    - "days to file"
+                - column_name: "deductible"
+                  description:
+                    - "Excess the customer pays per claim, USD. Ranges 250 to 2,000."
+                  synonyms:
+                    - "excess"
+                - column_name: "distance_from_service_centre_km"
+                  exclude: true
+                  description:
+                    - "Geodesic distance from the Houston claims service centre. Null for all but 8 rows."
+                - column_name: "has_telematics"
+                  description:
+                    - "True only where the vehicle has telematics readings. TRUE for just 8 of 12,996 claims -- any speed-based answer covers those 8 rows only and must not be presented as fleet-wide."
+                  synonyms:
+                    - "telematics fitted"
+                    - "has device"
+                - column_name: "incident_date"
+                  description:
+                    - "Date the incident occurred. Data spans 2021-02-04 to 2025-10-01."
+                  synonyms:
+                    - "loss date"
+                    - "date of loss"
+                    - "accident date"
+                - column_name: "incident_severity"
+                  description:
+                    - "Assessed damage severity. Three values: Minor Damage, Major Damage, Total Loss."
+                  synonyms:
+                    - "severity"
+                    - "damage level"
+                    - "damage severity"
+                  enable_format_assistance: true
+                  enable_entity_matching: true
+                - column_name: "incident_type"
+                  description:
+                    - "Cause of loss. Six values, roughly evenly distributed: Collision, Fire, Flood, Hail, Theft, Vandalism."
+                  synonyms:
+                    - "cause of loss"
+                    - "peril"
+                    - "loss type"
+                    - "accident type"
+                  enable_format_assistance: true
+                  enable_entity_matching: true
+                - column_name: "incident_within_coverage"
+                  description:
+                    - "True when incident_date falls between policy_effective_date and policy_expiry_date. Only 2,440 of 12,996 claims (19%) are within coverage; the other 81% have an incident outside the policy window and would normally be denied."
+                  synonyms:
+                    - "in coverage"
+                    - "covered"
+                    - "policy valid"
+                    - "within policy"
+                  enable_format_assistance: true
+                - column_name: "max_speed"
+                  description:
+                    - "Peak recorded speed, km/h. Populated for 8 claims only -- see has_telematics. A speeding check is the intended use."
+                  synonyms:
+                    - "top speed"
+                    - "peak speed"
+                    - "speeding"
+                - column_name: "policy_effective_date"
+                  description:
+                    - "Policy start date."
+                  synonyms:
+                    - "policy start"
+                    - "inception date"
+                - column_name: "policy_expiry_date"
+                  description:
+                    - "Policy end date."
+                  synonyms:
+                    - "policy end"
+                    - "expiry"
+                - column_name: "policy_number"
+                  description:
+                    - "Policy the claim was made against, format POL-000000. 7,879 distinct."
+                  synonyms:
+                    - "policy id"
+                    - "policy ref"
+                - column_name: "policy_type"
+                  description:
+                    - "Coverage product. Four values: Comprehensive, Collision, Liability, Third Party."
+                  synonyms:
+                    - "coverage type"
+                    - "product"
+                    - "cover"
+                  enable_format_assistance: true
+                  enable_entity_matching: true
+                - column_name: "premium"
+                  description:
+                    - "Annual premium, USD. Ranges 300 to 2,500."
+                  synonyms:
+                    - "annual premium"
+                - column_name: "sum_insured"
+                  description:
+                    - "Maximum the policy will pay, USD. Ranges 5,012 to 89,976."
+                  synonyms:
+                    - "coverage limit"
+                    - "insured value"
+                    - "sum assured"
+                    - "policy limit"
+                - column_name: "telematics_first_reading_at"
+                  exclude: true
+                  description:
+                    - "Null for all but 8 rows."
+                - column_name: "telematics_last_reading_at"
+                  exclude: true
+                  description:
+                    - "Null for all but 8 rows."
+                - column_name: "telematics_reading_count"
+                  description:
+                    - "Number of telematics readings behind the speed averages. Populated for 8 claims only."
+        instructions:
+          example_question_sqls:
+            - id: "00000000000000000000000000000021"
+              question:
+                - "How many claims fall outside their policy coverage window, by severity?"
+              sql:
+                - "SELECT customer_claim_policy_telematics.incident_severity, COUNT(*) AS claims, ROUND(SUM(customer_claim_policy_telematics.claim_amount), 2) AS exposure FROM ${var.catalog}.${resources.schemas.gold.name}.customer_claim_policy_telematics AS customer_claim_policy_telematics WHERE customer_claim_policy_telematics.incident_within_coverage = false GROUP BY customer_claim_policy_telematics.incident_severity ORDER BY claims DESC"
+              usage_guidance:
+                - "Coverage validity is a boolean column, never a date comparison written by hand."
+            - id: "00000000000000000000000000000022"
+              question:
+                - "Which claims exceed the sum insured?"
+              sql:
+                - "SELECT customer_claim_policy_telematics.claim_number, customer_claim_policy_telematics.customer_name, customer_claim_policy_telematics.claim_amount, customer_claim_policy_telematics.sum_insured, customer_claim_policy_telematics.claim_to_sum_insured_ratio FROM ${var.catalog}.${resources.schemas.gold.name}.customer_claim_policy_telematics AS customer_claim_policy_telematics WHERE customer_claim_policy_telematics.claim_to_sum_insured_ratio > 1 ORDER BY customer_claim_policy_telematics.claim_to_sum_insured_ratio DESC LIMIT 20"
+              usage_guidance:
+                - "Use the precomputed ratio rather than dividing the two columns."
+            - id: "00000000000000000000000000000023"
+              question:
+                - "What is our monthly claim exposure by severity?"
+              sql:
+                - "SELECT DATE_TRUNC('MONTH', customer_claim_policy_telematics.incident_date) AS incident_month, customer_claim_policy_telematics.incident_severity, ROUND(SUM(customer_claim_policy_telematics.claim_amount), 2) AS exposure FROM ${var.catalog}.${resources.schemas.gold.name}.customer_claim_policy_telematics AS customer_claim_policy_telematics GROUP BY incident_month, customer_claim_policy_telematics.incident_severity ORDER BY incident_month"
+              usage_guidance:
+                - "Time series are grouped on incident_date, the date of loss, not claim_date."
+          sql_snippets:
+            measures:
+              - id: "00000000000000000000000000000031"
+                alias: "total_exposure"
+                display_name: "Total Exposure"
+                sql:
+                  - "SUM(customer_claim_policy_telematics.claim_amount)"
+                synonyms:
+                  - "exposure"
+                  - "total claimed"
+                  - "total claim amount"
+            filters:
+              - id: "00000000000000000000000000000041"
+                display_name: "Outside coverage window"
+                sql:
+                  - "customer_claim_policy_telematics.incident_within_coverage = false"
+                synonyms:
+                  - "not covered"
+                  - "outside policy"
+                  - "lapsed policy"
+                  - "expired cover"
+              - id: "00000000000000000000000000000042"
+                display_name: "Exceeds sum insured"
+                sql:
+                  - "customer_claim_policy_telematics.claim_to_sum_insured_ratio > 1"
+                synonyms:
+                  - "over the limit"
+                  - "above coverage limit"
+                  - "over insured"
+              - id: "00000000000000000000000000000043"
+                display_name: "Reported late"
+                sql:
+                  - "customer_claim_policy_telematics.days_to_report > 14"
+                synonyms:
+                  - "late report"
+                  - "delayed claim"
+            expressions:
+              - id: "00000000000000000000000000000051"
+                alias: "incident_year"
+                display_name: "Incident Year"
+                sql:
+                  - "YEAR(customer_claim_policy_telematics.incident_date)"
+          text_instructions:
+            - id: "00000000000000000000000000000061"
+              content:
+                - "Grain: one row per claim. COUNT(*) counts claims. Customers and policies repeat across rows, so use COUNT(DISTINCT customer_id) or COUNT(DISTINCT policy_number) when asked about customers or policies.\n"
+                - "Date range: incidents run 2021-02-04 to 2025-10-01 and nothing is more recent. If a question says 'recent', 'this year' or 'last month', answer against the latest data present and say which period you used rather than returning an empty result for the current calendar date.\n"
+                - "Two date columns: incident_date is when the loss happened and is the default for trends; claim_date is when it was filed. Use claim_date only when the question is about filing or processing.\n"
+                - "Coverage: 81% of claims have an incident outside the policy window. That is a property of this dataset, not an error -- report the number plainly if asked.\n"
+                - "Telematics: speed and location are present for only 8 of 12,996 claims. Answer speed questions if asked, but always state that they cover those 8 claims only.\n"
+                - "Geography: every policy holder is in Texas, so state-level comparisons are meaningless; use customer_city.\n"
