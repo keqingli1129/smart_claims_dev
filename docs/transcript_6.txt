@@ -1,0 +1,516 @@
+Intro
+Building a data enti platform is really
+fun but at the end you don't do it for
+fun you do it to solve a business
+problem. So after you have built your
+medallion architecture after you have
+created your gold level tables you want
+to make the output accessible for your
+business and there are different ways
+how you can do that within databicks. If
+you simply want to build reports and
+expose them to your business users, you
+can do that within databicks using the
+builtin AIBI dashboarding
+functionalities. If that is not enough
+for you and you want to have more
+flexibility in accessing the data, you
+could also build a genie space within
+data bricks that lets you chat with your
+data in natural language. And if you
+want to build a custom web application
+to include even more interactivity and
+to also have more flexibility on the
+actual layouts, on the designs, on the
+visualizations, you could build a custom
+datab bricks app for that purpose. In
+this video, we will look into all of
+those free options that I just mentioned
+and we will implement them hands-on.
+This is actually the last part of an end
+to end databicks project we are working
+on. So if you want to know all the
+context around this use case and about
+the data that we pre-processed the
+machine learning model that we trained
+then check out the last couple of
+videos. And now let's dive right into
+data bricks. There we go. We are back in
+AI/BI Dashboards
+data bricks before we start building our
+consuming applications. Let's have a
+quick look into our catalog and the
+structure currently. So we built within
+the last couple of videos, if you're
+following the full series, we have built
+this smart claims dev catalog. We have
+the landing schema. We have the bronze
+schema where we transformed all the data
+we need into the delta format. Then we
+have the silver one where we cleaned
+this data and where we performed some
+data quality checks. And then we have
+the gold schema where we have our
+aggregated data and our joint data ready
+for use by business applications. And we
+have our machine learning model which we
+trained in the last part to
+automatically classify the severity of
+car crashes. As I mentioned in the
+intro, there are many ways to consume
+this data now and we will mainly focus
+on dashboards on Genie spaces as well as
+on databicks apps. Let's start with the
+dashboards. So to create a new dashboard
+within databicks, we just go over here
+to dashboards and then we click on
+create dashboard. And that's already it.
+We can go ahead and get started. We get
+some instructions how to go about a new
+dashboard. And we call this claims
+investigation. And we already get the
+instructions right here. So first thing
+we would need to do is to add some data
+that is powering this dashboard. So
+let's do this. And basically what we do
+here is based on the tables that we have
+already created previously based on the
+for example gold tables that are already
+registered in the unity catalog we can
+now do some queries on top and use this
+then for a visualization in the
+dashboard. So let's select here our
+catalog and one of the schemas and here
+we start with this example. So we are
+accessing the smart claims dev gold
+schema and we use this claim insights
+table that we produced in the last
+episode and all we do here is we are
+counting the incident severity by the
+type. Right? Now you see we added some
+parameters right here for the start and
+the end date. so that we can do this
+dynamic. And let me quickly edit this
+and make this a date. And same for this
+one. That's also a date. And now we can
+for example specify the 1st of January
+here for the start date. And for the end
+date, we can specify basically today,
+right? And then we can run this query
+and check out the results right here. So
+this is just a normal SQL query that we
+created right here. And then we create
+this data set for the dashboard. And
+this one we can for example call claims
+summary. And now we can go back to the
+dashboard. And here we can actually
+visualize it right. We can add a new
+visualization right over here. We can
+now either click everything together for
+us. So we can select the data set that
+we just created, right? The claim
+summary. This is the only one we have so
+far. And now I could manually basically
+select the visualization the x-axis
+yaxis color and so on and so forth. Or
+what I could also do is it is already
+even giving me this as a suggest
+suggestion the incident types
+distribution. And this is actually what
+I want to do here. And then it
+automatically goes ahead and creates a
+visualization for me. I could um further
+adjust that and say, okay, I don't want
+to have a pie chart. I actually want to
+have a bar chart. I could make it the
+other way around. And then I could also
+do the coloring better by specifying
+here that I want to have colors for the
+actual severity right here. And yeah, I
+could further customize this also for
+the coloring. And this is like a fully
+functional BI solution that you see
+right here. It's natively built into
+data bricks. You don't need like a
+separate license for any other BI tool.
+You can just do it right into here. And
+it also recently added quite a lot of
+new features. So we can also now set
+things like general themes right here.
+For example, we can do the dark mode,
+light mode, uh switch. Now this is what
+I have done already previously. And this
+is what you can see right over here. So
+I have created this dashboard with lots
+more visualizations based on our tables
+that we created within data bricks and
+this gives us basically an overview
+about our whole claims that we analyzed
+within data bricks and yeah now I have
+this dashboard which is great. So it
+shows me an overview of all the claims
+that have been already processed, right?
+It can also show me like outputs of my
+machine learning model for example. But
+for this we will use the data bricks
+apps in a second. But what else can we
+AI/BI Genie
+do? Right? So we have this more or less
+static dashboard that is typically
+created by certain personas within your
+organization. And if you are a business
+user, maybe this answers most of your
+questions, but maybe you would like to
+know something specific that is not
+covered yet by this dashboard. Now, what
+you would have to do is reach out back
+to your data analysts, data engineers,
+and so on to include this into this
+dashboard, right? Maybe the data is not
+even there yet. Maybe there needs to be
+some some data transformations first.
+Maybe it is already there, but it just
+takes time to create the visualization.
+This is where databicks genie comes into
+play. Genie is basically databicks
+managed solution to do text to SQL. So
+if we go ahead over here and we create a
+new genie space and the first thing we
+do is we connect it to our data sets. In
+this case we could select our claim
+insights table for example. Maybe we
+could also select our claim rules that
+we created earlier. where we can select
+the claims, the customers, telematics
+information, all of that and then create
+the genie space. And now we can
+basically go ahead and ask questions in
+natural language to our genie space. And
+Genie will convert this into a SQL
+statement and then execute it on a SQL
+warehouse. So it already provides me
+some sample questions that I could ask
+based on my input data set. Maybe we say
+like, give me an overview of how many
+claims were classified
+with the different severity types. And
+there we go. We got a response. So, we
+see like for total loss, we have 1,200
+claims. For um trivial damage, it's just
+about 397 in our data set, right? And
+you can even look at the code and see
+what Genie did. And in this case, it's a
+fairly simple query, but you could also
+ask way more complex things and Genie
+would figure out what kind of query to
+apply. Also, how to join the different
+tables if you added proper metadata into
+your Unity catalog. If you also added
+like primary key and foreign key
+constraints, for example, it would be
+capable also of figuring out how to do
+more complex joints on the data set and
+then give you the output right here. And
+it can also do visualizations. All
+Apps
+right, this was basically the second
+possibility how to consume the data
+within data bricks. And now maybe the
+most exciting one is to build a
+databicks app. For this, we go to the
+compute tab right over here and we click
+into apps. And first of all, before we
+look at the app that I already created
+beforehand for this use case, maybe
+let's look at the options if we start
+from zero. So we create the app right
+here and then we get a bunch of
+different options for different
+frameworks. So for example, we could
+create a streamlit app and we get a
+template for a data app, an interactive
+data app, for an OTP database app for
+example and so for the different
+frameworks we get different options
+here. To start with a simple example,
+let's choose streamllet and let's choose
+data app right here. And as a next step,
+we can provide different resources that
+the app will use. The resources right
+here are the different resources within
+data bricks that the app can then use to
+for example use a SQL warehouse to write
+a query or push down a query on top of
+your data set. So for this easy app,
+there is only the SQL warehouse as an
+option. If you would build like a custom
+app for example and um maybe let's
+quickly see how this looks like. Here we
+can add way more resources, right? So
+here we can add not only a SQL
+warehouse, we can add a serving endpoint
+for example to easily access our machine
+learning model endpoint that we created.
+We can also add a database which is an
+OOLTP database that we will also look
+into in a second and therefore we can
+link our different resources within data
+bricks so that the app can very easily
+access. Now let's go back to the simple
+example where we wanted to create a
+streamlit data app and we select our SQL
+warehouse. We click on next, next and
+install. Now we wait a couple of minutes
+for the app to actually deploy and then
+we can access it. Now the app is
+running. So if we click into it, we will
+see how a sample app could look like. We
+authorize it and there we go. This is
+like a sample app and how it could look
+like. So here we have some input fields
+to predict the fair on some sample taxi
+data set, right? And it's just like um a
+web app now that we can use. We can
+expose it internally in our company and
+um basically build on top of this
+template. Cool. Now we have seen the
+simple example. Now let's look into the
+app that I have built already for our
+use case which is deployed right here.
+First of all, maybe before we look into
+the app, let's quickly check out the
+resources right here because here it's a
+bit more advanced compared to what we
+have seen so far. So in this case, I
+have not only the SQL warehouse, but I
+have also a Postgress database and a
+serving endpoint. So you may be
+wondering about this database right
+here. So maybe let's quickly look into
+this and then we check out the actual
+app. So what I have done is I have
+created within databicks a lakebase
+database instance and this is something
+that was just recently announced and is
+currently in public preview. In this
+compute tab you can create an OOLTP
+database right here and this is what I
+have done. This is a posgress database
+and it's a relational database. And the
+reason I have built this is because if
+you're building web applications, you
+often would like to have a smooth user
+experience where the different data
+assets load very quickly. The problem is
+if we go always through the SQL
+warehouse to access our data to for
+example visualize some customer
+information or claim information you
+would always have some kind of latency
+because the SQL warehouse is more of an
+analytical compute option right it's
+operating on an object store and with
+data that is in a columner format right
+in in Delta and parket this is where we
+would typically in applications use a
+relational database for and And this is
+um why I created this OLTP database
+right here. And then what I can do here
+is I can go to my catalog. I can go to
+one of my tables. In this case, I'm
+choosing the customer claim policy
+teleatics table as this is the one that
+I would like to access from my front
+end. And I create a synced table out of
+it. And sync table means I create a
+posgress table out of my delta table.
+For this I specify the name. I just name
+it exactly like this. But I put also
+lake base uh right over here. Then I
+select the database instance. And then I
+choose the primary key which is the
+claim number in this case. And then I
+click on create. And there we go. The
+sync is completed. And we also see this
+is now a synced table which means this
+is a lakebase table that we created
+right here. So out of our delta table
+that could be accessed from the SQL
+warehouse we created a relational
+database table a posgress table and now
+we can in our app go right to the
+lakebased database and access this table
+with very low latency and just quickly
+extract some kind of info out of that.
+To show you how this looks like, we can
+also here basically query this uh
+lakebased database using the posgress
+editor right inside data brick. So you
+see here at the top now we are connected
+to to posgress not not the SQL server
+anymore and we can run queries on top
+and there we go. We get the results
+super fast and this is now really going
+through the Postgress database and not
+through the SQL warehouse anymore. And
+this is what I have implemented in my
+app as well. So now we can finally maybe
+click into it and see what I have built
+here. We open it up right over here. And
+there we go. So this is the app that I
+have built for this specific use case.
+As you can see at the top here, it has
+two different modes basically. It has
+the customer mode which we are in
+currently as well as the admin mode. The
+customer mode is basically to mimic or
+to give you an idea how the claim
+submission process could look like for
+this use case. So the idea is the
+customer logs into this portal or it
+could also be an app basically and then
+they submit their claims right here. And
+this is what we're going to do now. And
+then we have the admin mode and this we
+will see afterwards. This is basically
+for internal use our app that we could
+use to further analyze all of the
+claims, all of the severities for our
+internal people basically to review all
+of the claims that did not pass all of
+those out of the box checks that we
+perform. So now let's upload an image of
+Encar damage, right? Let's choose one of
+the the major ones. Let's choose maybe
+this one right here. This is a major
+damage here. So hopefully also our
+machine learning model should classify
+this properly. You also see here on the
+bottom right that we get this popup and
+this is what I implemented basically. So
+just now we did the inference on this
+image that I uploaded and we saw it's it
+was classified as as major right and
+then um here I provide some more
+information before I can submit the
+claim. So here let's put maybe 2222 as
+the policy number. We put in the
+accident location. So here maybe let's
+put in Munich. Um we specify the claim
+amount. So in this case maybe this was a
+full crash as you have seen in the
+image. Maybe we we say okay it's like
+30,000 accident date. Let's say it
+happened today. And then for the self
+assessed severity. So this is what I as
+a customer think this claim is. And here
+I would put major damage, right? And we
+already saw basically that our machine
+learning model thinks the same. Now we
+add a collision type. For this one, we
+put multi vehicle. We say they were um
+free vehicles involved. We can put some
+additional notes. And now I can
+basically submit. Now what happens? It's
+processing the claim. And there we go.
+This was quite fast. We already get the
+information that our claim has been
+approved. And what happened under the
+hood? It performed several checks here.
+So it checked the image severity, used
+our machine learning model to compare
+the selfassessed severity by the
+customer with the prediction from our
+machine learning model. We checked the
+policy amount. So those 30,000 that we
+inputed, this is still within the policy
+of the specific customer. We made sure
+that the policy date is still valid and
+we even performed a speed check based on
+the teleatics data to make sure that
+this customer was not driving too fast.
+And therefore, we completely
+automatically reviewed this claim and
+already give the information you will
+receive your refund within 3 to five
+business days. Now, let's copy the claim
+number right here because now we will
+switch to the admin mode. And the admin
+mode is built as I mentioned for
+internal usage to further analyze the
+different claims. We we see here we have
+the overview and the analysis tab. In
+the overview tab first of all we get an
+overview about the total claims and then
+also how many were like a major damage,
+how many were like a minor damage and so
+on and so forth. We can even filter here
+by severity type for example. And this
+will also filter our claims list that we
+see right here. And this is just an
+overview for us to see. Okay, I have
+these many claims with a minor damage
+for example. And I see the status of the
+different claims. So this is what I
+could implement within my company. All
+the claims that do not pass this out of
+the box checks, they will become under
+review. And then I know, okay, I should
+check all the claims that do not pass
+those out of the box checks. And then I
+could log in here as an employee and I
+could further investigate the different
+claims. Now on the analysis tab, if we
+click over here, we see even more
+details for each of the different
+claims. So here one of the the claims is
+pre-selected for a customer called Zims.
+We see the different severity checks for
+each of the different claims. So we see
+again the the severity matches. Um we
+see the accident image uploaded by the
+customer here. It matches what our
+machine learning model predicted. In
+this case for this claim it's it's also
+all fine. So it was within the limit.
+The policy is fine. The speed check was
+fine. Now we could also search for the
+claim that we have just submitted. Let's
+do this. And you see this is the image
+that we uploaded. And you see again that
+we passed all checks. And this way I
+could analyze all of my claims. I would
+specifically look out for the claims
+that do not match that do have some
+problems right here. So in this case
+it's all super nice. Um but in other
+cases I would maybe have a severity
+mismatch. I would have a policy amount
+that is over the amount that is allowed
+right and maybe an a policy that is not
+even um valid any cool. And that was it.
+That was all I wanted to show you for
+the databicks apps part. And I hope you
+enjoyed it. And yeah, that's pretty cool
+and quite flexible what we can build
+here with datab bricks apps. All right,
+Outro
+and that's already it. In this video, we
+have seen different options how we can
+consume the data that we produced and
+the machine learning models. We have
+seen how we can build dashboards with
+AIBI dashboarding functionality. We have
+seen how we can also speak with our data
+in natural language using Genie. And
+then we actually saw also how we can
+really build apps inside datab bricks
+that use our different resources that
+can use our SQL warehouse that can use a
+lakebased database and that can also use
+a model serving endpoint to build really
+custom interactive apps that can be used
+in my organization to serve different
+kind of use cases and make the data more
+accessible. I hope you enjoyed the video
+and the whole series.

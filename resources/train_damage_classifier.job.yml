@@ -41,6 +41,12 @@ resources:
               # is what keeps a dev run out of a colleague's experiment. Set it explicitly for a
               # shared prod experiment.
               experiment_path: ""
+              # The transcript's checkpoint, and it stays. A ResNet-18 was tried here to see
+              # whether a smaller model would fit the serverless UDF worker that
+              # [UDF_PYSPARK_ERROR.OOM] was crashing; it made no difference, which is the useful
+              # result -- torch's own footprint dominates, not the ~11M vs ~25M of weights. The
+              # scoring step is what had to change instead; see the notebook's batch inference
+              # cell.
               base_model: microsoft/resnet-50
               image_size: "224"
               epochs: "5"
@@ -49,45 +55,38 @@ resources:
               test_fraction: "0.25"
               random_seed: "42"
 
-          # THE ONE CLASSIC CLUSTER IN THIS BUNDLE. Everything else here is serverless, and the
-          # transcript's reason for the exception is library availability: "we will use a machine
-          # learning cluster as it has lots of those frameworks and libraries that we need
-          # already pre-installed". The ML runtime brings torch, torchvision and scikit-learn;
-          # the notebook adds only transformers and datasets on top.
-          new_cluster:
-            # Pinned to an LTS ML runtime rather than a rolling one, because the whole point of
-            # choosing classic here is a known set of pre-installed libraries -- a runtime that
-            # moves underneath the job would defeat it. `-cpu-` and not `-gpu-`: 56 images at
-            # 224px do not fill a GPU, and the instance would cost several times more to sit
-            # idle. Swap to 16.4.x-gpu-ml-scala2.13 with a g4dn.xlarge for a real dataset.
-            spark_version: 16.4.x-cpu-ml-scala2.12
-            node_type_id: m5d.xlarge
+          # NO COMPUTE BLOCK -- this task runs on serverless, like everything else in the bundle.
+          #
+          # This used to be the one classic cluster here, a single-node 16.4.x-cpu-ml runtime, on
+          # the transcript's reasoning: "we will use a machine learning cluster as it has lots of
+          # those frameworks and libraries that we need already pre-installed". That is a real
+          # advantage and it is gone -- this workspace refuses the job outright:
+          #
+          #     Only serverless compute is supported in the workspace. (400 INVALID_PARAMETER_VALUE)
+          #
+          # A `bundle deploy` is all-or-nothing, so while that cluster spec was here NOTHING in
+          # this bundle could deploy, not just this job. Omitting the compute block is the fix;
+          # a serverless notebook task needs no spec at all.
+          #
+          # WHAT THE SWITCH COSTS: the ML runtime's pre-installed torch. The notebook's %pip cell
+          # now names torch, torchvision and scikit-learn alongside transformers and datasets --
+          # see the "Why serverless" section at the top of the notebook for why they live there
+          # rather than in an `environments:` block here.
+          #
+          # `data_security_mode: SINGLE_USER` is also gone, and is not replaced: serverless
+          # already runs under the identity of whoever triggers the job, which is what that
+          # setting was buying. The notebook's UC reads and its model registration are unchanged.
 
-            # SINGLE NODE. The three settings below have to agree or the cluster fails to start,
-            # and all three are required -- num_workers alone is not enough.
-            #
-            # It is the right shape as well as the cheap one: the fine-tune runs entirely on the
-            # driver in torch, and the only distributed work is the resize UDF and the scoring
-            # UDF over 56 rows. Workers would idle through the part that takes the time.
-            num_workers: 0
-            spark_conf:
-              spark.master: "local[*, 4]"
-              spark.databricks.cluster.profile: singleNode
-            custom_tags:
-              ResourceClass: SingleNode
-
-            # Required for the notebook to read Unity Catalog tables and write a UC model under
-            # the identity of whoever runs the job.
-            data_security_mode: SINGLE_USER
-
-          # One retry, matching clean_and_aggregate in transformations.job.yml: a classic cluster
-          # can fail to acquire an instance, and that is worth a second attempt before a person
-          # gets involved. It is also why the notebook is safe to re-run -- every table it writes
-          # is `mode("overwrite")` and registering a second model version is additive.
+          # One retry, matching clean_and_aggregate in transformations.job.yml. The failure it
+          # guards has changed shape -- no instance to fail to acquire any more, but a PyPI or
+          # Hugging Face fetch can still time out. It is also why the notebook is safe to re-run:
+          # every table it writes is `mode("overwrite")` and registering a second model version
+          # is additive.
           max_retries: 1
           min_retry_interval_millis: 60000
 
-          # Generous but finite. A cold classic cluster is ~5 minutes before any code runs, and
-          # five epochs of ResNet-50 on CPU is another ten or so. Without a timeout a hung
-          # Hugging Face download would hold the cluster open indefinitely.
+          # Generous but finite. Serverless starts in well under a minute rather than the ~5 a
+          # cold classic cluster took, but that saving is spent again installing torch. Five
+          # epochs of ResNet-50 on CPU is another ten minutes or so. Without a timeout a hung
+          # Hugging Face download would hold the run open indefinitely.
           timeout_seconds: 5400

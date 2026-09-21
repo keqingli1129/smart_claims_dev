@@ -1,0 +1,40 @@
+# Transcript section: "AI/BI Dashboards".
+#
+# The transcript builds this by clicking: new dashboard, add a dataset, write a SQL query against
+# a gold table, drop a visualization on the canvas. That produces a dashboard that exists in one
+# workspace, points at one hard-coded schema, and is not in source control. This file is the same
+# dashboard as a bundle resource, so it deploys alongside the pipelines that build the tables it
+# reads.
+#
+# WHY dataset_catalog / dataset_schema RATHER THAN QUALIFIED NAMES IN THE SQL:
+# the queries inside claims_investigation.lvdash.json use a BARE table name --
+# `FROM customer_claim_policy_telematics`, with no catalog and no schema. Those two fields below
+# supply the missing parts at deploy time. This is the whole reason the dashboard is portable:
+#
+#   dev  -> smart_claims_dev.dev_keqingli1129_gold.customer_claim_policy_telematics
+#   prod -> smart_claims_dev.gold.customer_claim_policy_telematics
+#
+# `${resources.schemas.gold.name}` resolves through the RESOURCE, not `${var.gold_schema}`, for
+# exactly the reason transformations.pipeline.yml gives: development mode rewrites the schema to
+# dev_<username>_gold, and only the resource reference picks that up. A hard-coded catalog or
+# schema anywhere in the .lvdash.json silently defeats both fields -- they fill in what is
+# missing, they do not rewrite what is already there.
+#
+# Requires Databricks CLI >= 0.281.0 for dataset_catalog / dataset_schema.
+
+resources:
+  dashboards:
+    claims_investigation:
+      display_name: Claims Investigation
+      file_path: ../src/dashboards/claims_investigation.lvdash.json
+      warehouse_id: ${var.warehouse_id}
+
+      # The parameterisation. See the note above.
+      dataset_catalog: ${var.catalog}
+      dataset_schema: ${resources.schemas.gold.name}
+
+      # The dashboard runs its queries as the viewer, not as the publisher. A viewer without
+      # SELECT on the gold schema sees an error rather than someone else's data -- which is the
+      # correct default for a claims dashboard carrying policy holder names. Set to true only if
+      # you intend to publish to an audience that has no Unity Catalog grants of its own.
+      embed_credentials: false

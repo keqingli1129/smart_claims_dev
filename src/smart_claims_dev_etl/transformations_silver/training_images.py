@@ -40,10 +40,24 @@ from utilities.medallion import read_bronze_stream
     # A zero-length file is a failed upload, not an image. It would sail through any check that
     # only looked at the path.
     "non_empty_file": "size_bytes > 0",
-    # An unlabelled image is not training data. This is also what quietly retires the images
-    # generated before part 5 renamed them -- `train_0036.png` yields an empty label, fails
-    # here, and is dropped, while bronze keeps the row it always had. Nothing has to be
-    # deleted by hand for the table to become correct.
+    # An unlabelled image is not training data. `train_0036.png` -- the naming used before part 5
+    # -- yields an empty label, fails here, and is dropped, while bronze keeps the row it always
+    # had.
+    #
+    # THIS ONLY RETIRES OLD IMAGES ON A FULL REFRESH, and the distinction cost a debugging
+    # session. A streaming table is append-only: adding `label` to the select evolves the schema
+    # and backfills every ALREADY-COMMITTED row with NULL, but those rows are not re-read and
+    # this expectation is never evaluated against them. Rows that predate the column therefore
+    # survive it, with a NULL label rather than the empty string the predicate is written for --
+    # and `NULL <> ''` would not have dropped them either.
+    #
+    # After re-seeding the volume, the silver table is only correct again once that has happened:
+    #
+    #     databricks bundle run transformations -t dev --full-refresh training_images
+    #
+    # which resets this one table and re-reads bronze from the beginning. It is safe to scope
+    # that narrowly: nothing downstream of this table lives in the pipeline, so the gold
+    # materialized views are excluded from the update and keep their contents.
     "labelled": "label <> ''",
 })
 def training_images():

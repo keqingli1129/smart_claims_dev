@@ -6,7 +6,7 @@
 # MAGIC
 # MAGIC Takes the car-crash images ingested in part 3, fine-tunes a pre-trained ResNet to classify
 # MAGIC the severity of the damage, tracks the run in MLflow, registers the result into Unity
-# MAGIC Catalog, and scores every image back through it as a Spark UDF.
+# MAGIC Catalog, and scores every image back through the registered model.
 # MAGIC
 # MAGIC ```
 # MAGIC bronze.training_images   silver.training_images
@@ -20,7 +20,7 @@
 # MAGIC                    |
 # MAGIC        UC model  gold.claims_damage_level@prod
 # MAGIC                    |
-# MAGIC            spark_udf over the original images
+# MAGIC       driver-side pyfunc over the original images
 # MAGIC                    |
 # MAGIC          gold.damage_predictions  + confusion matrix
 # MAGIC ```
@@ -42,28 +42,45 @@
 # MAGIC
 # MAGIC The notebook prints this warning next to the matrix for exactly that reason.
 # MAGIC
-# MAGIC ## Why a classic ML cluster
+# MAGIC ## Why serverless, and why every library is named below
 # MAGIC
-# MAGIC Every other compute in this bundle is serverless. This one is not, per the transcript:
-# MAGIC *"we will use a machine learning cluster as it has lots of those frameworks and libraries
-# MAGIC that we need already pre-installed"*. `torch`, `torchvision` and `scikit-learn` come with
-# MAGIC the ML runtime; only `transformers` and `datasets` are installed below. The cluster spec
-# MAGIC lives in `resources/train_damage_classifier.job.yml`.
+# MAGIC The transcript reaches for a classic ML cluster here — *"we will use a machine learning
+# MAGIC cluster as it has lots of those frameworks and libraries that we need already
+# MAGIC pre-installed"* — and this notebook did too, until the workspace rejected it:
+# MAGIC `Only serverless compute is supported in the workspace`. So the whole bundle is serverless
+# MAGIC now, including this job.
+# MAGIC
+# MAGIC That removes the ML runtime, and with it the thing the transcript was actually relying on:
+# MAGIC a pre-installed `torch`. The serverless base environment carries `mlflow`, `pandas`,
+# MAGIC `numpy`, `pyarrow` and `scikit-learn`, but **not** `torch` — so the install cell below now
+# MAGIC names the deep-learning stack explicitly rather than inheriting it.
+# MAGIC
+# MAGIC Naming them in the notebook rather than in the job's `environments:` block is deliberate:
+# MAGIC it keeps the notebook runnable on its own, attached to an interactive serverless session,
+# MAGIC which is how anyone actually develops it. The job definition then needs no compute spec at
+# MAGIC all. See `resources/train_damage_classifier.job.yml`.
 
 # COMMAND ----------
 
 # MAGIC %md
 # MAGIC ## Libraries
 # MAGIC
-# MAGIC Deliberately unpinned. Pinning here would mean guessing versions that are compatible with
-# MAGIC whatever `torch` the chosen ML runtime ships, and a wrong guess fails at import rather
-# MAGIC than at review. Instead the resolved versions are read back after install, logged as
-# MAGIC MLflow parameters, and written into the model's `pip_requirements` — so the run is
-# MAGIC reproducible after the fact even though it was not pinned in advance.
+# MAGIC Deliberately unpinned. Pinning here would mean guessing a `torch` / `transformers` pair
+# MAGIC that resolves against whatever the serverless base environment already holds, and a wrong
+# MAGIC guess fails at import rather than at review. Instead the resolved versions are read back
+# MAGIC after install, logged as MLflow parameters, and written into the model's
+# MAGIC `pip_requirements` — so the run is reproducible after the fact even though it was not
+# MAGIC pinned in advance.
+# MAGIC
+# MAGIC `torch` is the expensive one — a few hundred MB, and a couple of minutes before any of the
+# MAGIC code below runs. It is listed anyway rather than assumed, because assuming it is exactly
+# MAGIC what broke when the ML runtime went away. `scikit-learn` ships with serverless already and
+# MAGIC is named for the same reason: the notebook imports it at the metrics step, so it should
+# MAGIC not depend on a base image continuing to include it.
 
 # COMMAND ----------
 
-# MAGIC %pip install -q transformers datasets accelerate
+# MAGIC %pip install -q torch torchvision transformers datasets accelerate scikit-learn
 
 # COMMAND ----------
 
@@ -84,7 +101,8 @@ dbutils.library.restartPython()
 
 import io
 import json
-from importlib.metadata import version
+import importlib
+from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 
 dbutils.widgets.text("catalog", "", "Catalog")
@@ -168,8 +186,14 @@ if n_images == 0:
     raise ValueError(
         f"No rows joined between {SOURCE_TABLE} and {BYTES_TABLE}. If the training images "
         "predate part 5 they have no label in the filename, the silver `labelled` expectation "
-        "drops them, and this join is empty. Re-seed the volume and re-run the object_storage "
-        "pipeline -- the run order is in the README."
+        "drops them, and this join is empty. Re-seed the volume, re-run the object_storage "
+        "pipeline to ingest the new files, THEN full-refresh the silver table:\n"
+        "    databricks bundle run object_storage_generator -t dev\n"
+        "    databricks bundle run smart_claims_pipeline -t dev\n"
+        "    databricks bundle run transformations -t dev --full-refresh training_images\n"
+        "The full refresh is not optional -- see the comment on the `labelled` expectation in "
+        "transformations_silver/training_images.py for why the first two steps alone leave "
+        "NULL-labelled rows behind."
     )
 
 display(images.groupBy("label").count().orderBy("label"))
@@ -255,10 +279,52 @@ WorkspaceClient().workspace.mkdirs(str(Path(EXPERIMENT_PATH).parent))
 mlflow.set_registry_uri("databricks-uc")
 mlflow.set_experiment(EXPERIMENT_PATH)
 
+# Distribution name -> import name, for the two that differ.
+_IMPORT_NAME = {"pillow": "PIL", "scikit-learn": "sklearn"}
+
+
+def lib_version(lib: str) -> str:
+    """Resolved version of an installed library, by whichever route can see it.
+
+    `importlib.metadata` is the correct answer and the first thing tried.
+
+    THE OBSERVED SYMPTOM, on serverless: `version("mlflow")` raises PackageNotFoundError for a
+    module imported successfully a dozen lines above, and the run dies there. Only the metadata
+    lookup fails; `mlflow` itself is imported, and `set_registry_uri` / `set_experiment` have
+    already run against it by that point.
+
+    The likeliest cause is that the installed DISTRIBUTION is not called `mlflow`. Databricks
+    runtimes without the ML libraries ship `mlflow-skinny`, which provides the `mlflow` module
+    under a different distribution name -- so the import resolves and the metadata lookup does
+    not. That is a hypothesis, not a measurement; the probe below prints what is actually
+    installed so the next run settles it. Whatever the cause, the fallback is the same.
+
+    The fallback reads the module's own `__version__`, which every library named below exposes.
+    It has to return something REAL rather than a placeholder: these strings are written into the
+    model's `pip_requirements`, so an "unknown" would become `mlflow==unknown` and break the
+    environment rebuild on any serving endpoint that loads the model.
+    """
+    try:
+        return version(lib)
+    except PackageNotFoundError:
+        module = importlib.import_module(_IMPORT_NAME.get(lib, lib))
+        return module.__version__
+
+
 LIB_VERSIONS = {
-    lib: version(lib) for lib in ("mlflow", "torch", "transformers", "datasets", "pillow")
+    lib: lib_version(lib) for lib in ("mlflow", "torch", "transformers", "datasets", "pillow")
 }
 print(json.dumps(LIB_VERSIONS, indent=2))
+
+# Diagnostic, not logic -- nothing below reads this. It exists to settle why the lookup above
+# needs a fallback at all: if `mlflow-skinny` resolves while `mlflow` does not, the docstring's
+# hypothesis is confirmed and can be stated as fact. Costs one line of output per run.
+for _dist in ("mlflow", "mlflow-skinny"):
+    try:
+        print(f"  metadata version({_dist!r}) = {version(_dist)}")
+    except PackageNotFoundError:
+        print(f"  metadata version({_dist!r}) -> PackageNotFoundError")
+print(f"  mlflow.__version__ = {mlflow.__version__}  from {mlflow.__file__}")
 
 # COMMAND ----------
 
@@ -591,29 +657,84 @@ print(f"registered {FULL_MODEL_NAME} version {MODEL_VERSION}, alias @prod")
 # MAGIC
 # MAGIC *"To do batch inference within Databricks, what you can do is you can register a Spark
 # MAGIC UDF."* One artifact, two consumption paths — the same registered model that a serving
-# MAGIC endpoint would load is here turned into a UDF and run across a Delta table in parallel.
+# MAGIC endpoint would load is also what scores a table here.
 # MAGIC
 # MAGIC Scored against the **original** images from bronze, not the resized table, exactly as the
 # MAGIC transcript does (*"we use our silver initial input images"*). The wrapper's own processor
 # MAGIC resizes them, which is the point of having wrapped it: callers hand over whatever bytes
 # MAGIC they have.
 # MAGIC
-# MAGIC `env_manager="local"` reuses this cluster's environment instead of rebuilding the model's
-# MAGIC from `pip_requirements`. Correct here because scoring and training are the same session;
-# MAGIC scoring from a *different* runtime needs `"virtualenv"` or `"uv"` instead.
+# MAGIC ## Why this does not use `spark_udf`, which is what the transcript reaches for
+# MAGIC
+# MAGIC `mlflow.pyfunc.spark_udf` is the right tool and it does not work on this compute. It ships
+# MAGIC the model into a Spark **Python UDF worker**, and on serverless that worker crashes loading
+# MAGIC it:
+# MAGIC
+# MAGIC ```
+# MAGIC [UDF_PYSPARK_ERROR.OOM] Python worker exited unexpectedly (crashed)
+# MAGIC ```
+# MAGIC
+# MAGIC Three runs pinned down the cause, and two plausible fixes were wrong:
+# MAGIC
+# MAGIC | Attempt | Result |
+# MAGIC |---|---|
+# MAGIC | ResNet-50, default partitions | OOM |
+# MAGIC | ResNet-50, `repartition(1)` — one worker, one model load | OOM |
+# MAGIC | ResNet-18 (~11M params vs ~25M), `repartition(1)` | OOM |
+# MAGIC
+# MAGIC So it is neither concurrency nor the size of the weights: **torch's own footprint does not
+# MAGIC fit in a serverless UDF worker**, and that budget is not configurable. The contrast that
+# MAGIC settles it is a few cells above — the *driver* imports torch and fine-tunes this very model
+# MAGIC every run without trouble. Drivers get real memory; UDF workers do not.
+# MAGIC
+# MAGIC So the data comes to the model instead of the model going to the data: load the pyfunc on
+# MAGIC the driver and score a pandas frame.
+# MAGIC
+# MAGIC **This is correct for 56 images and wrong at scale.** It works because the whole table fits
+# MAGIC in driver memory; at a million rows it would not, and there is no partition count that
+# MAGIC rescues it. The scalable answers on serverless are a Model Serving endpoint fronted by
+# MAGIC `ai_query`, or classic ML compute where `spark_udf` can have the worker memory it needs —
+# MAGIC in which case the commented block below is what to restore.
 
 # COMMAND ----------
 
-predict_damage_udf = mlflow.pyfunc.spark_udf(
-    spark,
-    model_uri=f"models:/{FULL_MODEL_NAME}@prod",
-    env_manager="local",
-    result_type="string",
-)
+# THE spark_udf PATH, kept for the compute that can run it. Restore this block (and drop the
+# driver-side scoring below) on a classic ML cluster with worker memory:
+#
+#     predict_damage_udf = mlflow.pyfunc.spark_udf(
+#         spark,
+#         model_uri=f"models:/{FULL_MODEL_NAME}@prod",
+#         env_manager="local",
+#         result_type="string",
+#     )
+#     (
+#         images.withColumn("damage_prediction", predict_damage_udf(F.col("content")))
+#         .select("path", "file_name", "label", "damage_prediction")
+#         .withColumn("scored_at", F.current_timestamp())
+#         .write.mode("overwrite")
+#         .option("overwriteSchema", "true")
+#         .saveAsTable(PREDICTIONS_TABLE)
+#     )
+#
+# `env_manager="local"` there reuses the session's environment instead of rebuilding the model's
+# from `pip_requirements` -- correct when scoring and training share a session, as they do here.
+# Scoring from a different runtime needs "virtualenv" or "uv" instead.
+
+# Driver-side scoring. `load_model` is the same artifact `spark_udf` would have loaded, resolved
+# through the same @prod alias -- only the process it runs in differs.
+scoring_model = mlflow.pyfunc.load_model(f"models:/{FULL_MODEL_NAME}@prod")
+
+# `content` is the raw PNG bytes and is dropped before writing: the predictions table is a
+# narrow, joinable result, and bronze already holds the images.
+scored_pdf = images.select("path", "file_name", "label", "content").toPandas()
+print(f"scoring {len(scored_pdf)} images on the driver")
+
+# The wrapper's predict takes a single-column frame of image bytes, which is exactly what the
+# serving endpoint hands it -- so this exercises the same entry point, not a shortcut around it.
+scored_pdf["damage_prediction"] = scoring_model.predict(scored_pdf[["content"]])
 
 (
-    images.withColumn("damage_prediction", predict_damage_udf(F.col("content")))
-    .select("path", "file_name", "label", "damage_prediction")
+    spark.createDataFrame(scored_pdf.drop(columns=["content"]))
     .withColumn("scored_at", F.current_timestamp())
     .write.mode("overwrite")
     .option("overwriteSchema", "true")

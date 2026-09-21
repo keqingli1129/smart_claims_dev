@@ -67,6 +67,17 @@ variables:
       references the resource rather than ${var.bronze_schema}.
     default: ${resources.schemas.bronze.name}
 
+  # --- Consumption layer, Part 5 -------------------------------------------------------------
+  warehouse_id:
+    description: >-
+      SQL warehouse the AI/BI dashboard runs its queries on. A `lookup` rather than a literal id:
+      warehouse ids are per-workspace, so a hard-coded one is the single value that would stop
+      this bundle deploying anywhere but the workspace it was written in. The name is resolved at
+      deploy time and fails loudly if no warehouse matches, which is better than a dashboard that
+      deploys and then cannot run.
+    lookup:
+      warehouse: Serverless Starter Warehouse
+
   # --- Telematics source -------------------------------------------------------------------
   # The transcript reads an AWS Kinesis data stream. Both code paths live in the transformation
   # files behind one function; this switch picks which one runs.

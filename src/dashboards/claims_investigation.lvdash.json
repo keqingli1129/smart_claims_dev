@@ -1,0 +1,536 @@
+{
+  "datasets": [
+    {
+      "name": "ds_claims",
+      "displayName": "Claims, policies and customers",
+      "queryLines": [
+        "SELECT claim_number, incident_date, incident_type, incident_severity,\n",
+        "       claim_amount, claim_date, claim_status, days_to_report,\n",
+        "       policy_number, policy_type, policy_effective_date, policy_expiry_date,\n",
+        "       premium, sum_insured, deductible,\n",
+        "       customer_id, customer_name, customer_city,\n",
+        "       claim_to_sum_insured_ratio, incident_within_coverage,\n",
+        "       CASE WHEN NOT incident_within_coverage      THEN 'Outside coverage'\n",
+        "            WHEN claim_to_sum_insured_ratio > 1    THEN 'Exceeds sum insured'\n",
+        "            WHEN days_to_report > 14               THEN 'Reported late'\n",
+        "            ELSE 'Clean' END AS review_flag\n",
+        "FROM customer_claim_policy_telematics\n",
+        "ORDER BY claim_amount DESC"
+      ],
+      "columns": [
+        {
+          "displayName": "Total Claims",
+          "description": "Number of claims in scope",
+          "expression": "COUNT(`claim_number`)"
+        },
+        {
+          "displayName": "Exposure",
+          "description": "Total claimed amount",
+          "expression": "SUM(`claim_amount`)"
+        },
+        {
+          "displayName": "Outside Coverage %",
+          "description": "Share of claims whose incident date falls outside the policy window",
+          "expression": "SUM(CASE WHEN `incident_within_coverage` THEN 0 ELSE 1 END) * 1.0 / COUNT(`claim_number`)"
+        },
+        {
+          "displayName": "Over Sum Insured %",
+          "description": "Share of claims claiming more than the policy's sum insured",
+          "expression": "SUM(CASE WHEN `claim_to_sum_insured_ratio` > 1 THEN 1 ELSE 0 END) * 1.0 / COUNT(`claim_number`)"
+        },
+        {
+          "displayName": "Avg Days to Report",
+          "description": "Mean delay between incident and claim",
+          "expression": "AVG(`days_to_report`)"
+        }
+      ]
+    }
+  ],
+  "pages": [
+    {
+      "name": "overview",
+      "displayName": "Overview",
+      "pageType": "PAGE_TYPE_CANVAS",
+      "layoutVersion": "GRID_V1",
+      "layout": [
+        {
+          "widget": {
+            "name": "header",
+            "multilineTextboxSpec": {
+              "lines": [
+                "# Claims Investigation\n",
+                "\n",
+                "Every claim in the gold layer, joined to its policy and policy holder. The four tiles below are the ones an adjuster acts on: **how much is being claimed**, and **how much of it fails a basic policy check**. Four in five claims have an incident date outside the policy's effective window, and roughly a third claim more than the sum insured — those are the rows in the review table at the bottom. Use the **Filters** page to scope by date, severity, incident type or policy type; every widget on this page responds."
+              ]
+            }
+          },
+          "position": {"x": 0, "y": 0, "width": 12, "height": 3}
+        },
+        {
+          "widget": {
+            "name": "kpi_total_claims",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ds_claims",
+                  "fields": [{"name": "measure(Total Claims)", "expression": "MEASURE(`Total Claims`)"}],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "counter",
+              "encodings": {
+                "value": {
+                  "fieldName": "measure(Total Claims)",
+                  "displayName": "Claims",
+                  "format": {"type": "number-plain", "abbreviation": "compact", "decimalPlaces": {"type": "max", "places": 1}}
+                }
+              },
+              "frame": {"title": "Total claims", "showTitle": true}
+            }
+          },
+          "position": {"x": 0, "y": 3, "width": 3, "height": 3}
+        },
+        {
+          "widget": {
+            "name": "kpi_exposure",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ds_claims",
+                  "fields": [{"name": "measure(Exposure)", "expression": "MEASURE(`Exposure`)"}],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "counter",
+              "encodings": {
+                "value": {
+                  "fieldName": "measure(Exposure)",
+                  "displayName": "Claimed",
+                  "format": {"type": "number-currency", "currencyCode": "USD", "abbreviation": "compact", "decimalPlaces": {"type": "max", "places": 2}}
+                }
+              },
+              "frame": {"title": "Total exposure", "showTitle": true}
+            }
+          },
+          "position": {"x": 3, "y": 3, "width": 3, "height": 3}
+        },
+        {
+          "widget": {
+            "name": "kpi_outside_coverage",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ds_claims",
+                  "fields": [{"name": "measure(Outside Coverage %)", "expression": "MEASURE(`Outside Coverage %`)"}],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "counter",
+              "encodings": {
+                "value": {
+                  "fieldName": "measure(Outside Coverage %)",
+                  "displayName": "Outside coverage",
+                  "format": {"type": "number-percent", "decimalPlaces": {"type": "max", "places": 1}}
+                }
+              },
+              "frame": {"title": "Incident outside policy window", "showTitle": true}
+            }
+          },
+          "position": {"x": 6, "y": 3, "width": 3, "height": 3}
+        },
+        {
+          "widget": {
+            "name": "kpi_over_sum_insured",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ds_claims",
+                  "fields": [{"name": "measure(Over Sum Insured %)", "expression": "MEASURE(`Over Sum Insured %`)"}],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "counter",
+              "encodings": {
+                "value": {
+                  "fieldName": "measure(Over Sum Insured %)",
+                  "displayName": "Over sum insured",
+                  "format": {"type": "number-percent", "decimalPlaces": {"type": "max", "places": 1}}
+                }
+              },
+              "frame": {"title": "Claim exceeds sum insured", "showTitle": true}
+            }
+          },
+          "position": {"x": 9, "y": 3, "width": 3, "height": 3}
+        },
+        {
+          "widget": {
+            "name": "section_mix",
+            "multilineTextboxSpec": {"lines": ["## Claim mix"]}
+          },
+          "position": {"x": 0, "y": 6, "width": 12, "height": 1}
+        },
+        {
+          "widget": {
+            "name": "severity_by_type",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ds_claims",
+                  "fields": [
+                    {"name": "incident_type", "expression": "`incident_type`"},
+                    {"name": "incident_severity", "expression": "`incident_severity`"},
+                    {"name": "count(claim_number)", "expression": "COUNT(`claim_number`)"}
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "widgetType": "bar",
+              "mark": {"layout": "group"},
+              "encodings": {
+                "x": {"fieldName": "incident_type", "displayName": "Incident type", "scale": {"type": "categorical", "sort": {"by": "value"}}},
+                "y": {"fieldName": "count(claim_number)", "displayName": "Claims", "scale": {"type": "quantitative"}},
+                "color": {
+                  "fieldName": "incident_severity",
+                  "displayName": "Severity",
+                  "scale": {
+                    "type": "categorical",
+                    "sort": {"by": "custom-order", "orderedValues": ["Total Loss", "Major Damage", "Minor Damage"]},
+                    "mappings": [
+                      {"value": "Total Loss", "color": "#FF7054"},
+                      {"value": "Major Damage", "color": "#FFA600"},
+                      {"value": "Minor Damage", "color": "#99DDB4"}
+                    ]
+                  }
+                }
+              },
+              "frame": {"showTitle": true, "title": "Incident severity by incident type"}
+            }
+          },
+          "position": {"x": 0, "y": 7, "width": 7, "height": 6}
+        },
+        {
+          "widget": {
+            "name": "status_mix",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ds_claims",
+                  "fields": [
+                    {"name": "claim_status", "expression": "`claim_status`"},
+                    {"name": "count(claim_number)", "expression": "COUNT(`claim_number`)"}
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "widgetType": "pie",
+              "encodings": {
+                "angle": {"fieldName": "count(claim_number)", "displayName": "Claims", "scale": {"type": "quantitative"}},
+                "color": {"fieldName": "claim_status", "displayName": "Status", "scale": {"type": "categorical"}},
+                "label": {"show": true}
+              },
+              "frame": {"showTitle": true, "title": "Claims by status"}
+            }
+          },
+          "position": {"x": 7, "y": 7, "width": 5, "height": 6}
+        },
+        {
+          "widget": {
+            "name": "exposure_trend",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ds_claims",
+                  "fields": [
+                    {"name": "monthly(incident_date)", "expression": "DATE_TRUNC(\"MONTH\", `incident_date`)"},
+                    {"name": "incident_severity", "expression": "`incident_severity`"},
+                    {"name": "sum(claim_amount)", "expression": "SUM(`claim_amount`)"}
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "widgetType": "line",
+              "encodings": {
+                "x": {"fieldName": "monthly(incident_date)", "displayName": "Incident month", "scale": {"type": "temporal"}},
+                "y": {
+                  "fieldName": "sum(claim_amount)",
+                  "displayName": "Claimed",
+                  "scale": {"type": "quantitative"},
+                  "format": {"type": "number-currency", "currencyCode": "USD", "abbreviation": "compact", "decimalPlaces": {"type": "max", "places": 1}}
+                },
+                "color": {
+                  "fieldName": "incident_severity",
+                  "displayName": "Severity",
+                  "scale": {
+                    "type": "categorical",
+                    "mappings": [
+                      {"value": "Total Loss", "color": "#FF7054"},
+                      {"value": "Major Damage", "color": "#FFA600"},
+                      {"value": "Minor Damage", "color": "#99DDB4"}
+                    ]
+                  }
+                }
+              },
+              "frame": {"showTitle": true, "title": "Monthly exposure by severity"}
+            }
+          },
+          "position": {"x": 0, "y": 13, "width": 12, "height": 5}
+        },
+        {
+          "widget": {
+            "name": "section_review",
+            "multilineTextboxSpec": {"lines": ["## Claims needing review\n", "\n", "Everything that failed at least one policy check, largest claim first."]}
+          },
+          "position": {"x": 0, "y": 18, "width": 12, "height": 2}
+        },
+        {
+          "widget": {
+            "name": "review_table",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ds_claims",
+                  "fields": [
+                    {"name": "claim_number", "expression": "`claim_number`"},
+                    {"name": "incident_date", "expression": "`incident_date`"},
+                    {"name": "customer_name", "expression": "`customer_name`"},
+                    {"name": "incident_type", "expression": "`incident_type`"},
+                    {"name": "incident_severity", "expression": "`incident_severity`"},
+                    {"name": "policy_type", "expression": "`policy_type`"},
+                    {"name": "claim_amount", "expression": "`claim_amount`"},
+                    {"name": "sum_insured", "expression": "`sum_insured`"},
+                    {"name": "claim_to_sum_insured_ratio", "expression": "`claim_to_sum_insured_ratio`"},
+                    {"name": "days_to_report", "expression": "`days_to_report`"},
+                    {"name": "claim_status", "expression": "`claim_status`"},
+                    {"name": "review_flag", "expression": "`review_flag`"}
+                  ],
+                  "filters": [{"expression": "`review_flag` <> 'Clean'"}],
+                  "disaggregated": true
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "table",
+              "encodings": {
+                "columns": [
+                  {"fieldName": "claim_number", "displayName": "Claim"},
+                  {"fieldName": "incident_date", "displayName": "Incident date"},
+                  {"fieldName": "customer_name", "displayName": "Policy holder"},
+                  {"fieldName": "incident_type", "displayName": "Type"},
+                  {"fieldName": "incident_severity", "displayName": "Severity"},
+                  {"fieldName": "policy_type", "displayName": "Policy"},
+                  {
+                    "fieldName": "claim_amount",
+                    "displayName": "Claimed",
+                    "format": {"type": "number-currency", "currencyCode": "USD", "abbreviation": "compact", "decimalPlaces": {"type": "max", "places": 2}}
+                  },
+                  {
+                    "fieldName": "sum_insured",
+                    "displayName": "Sum insured",
+                    "format": {"type": "number-currency", "currencyCode": "USD", "abbreviation": "compact", "decimalPlaces": {"type": "max", "places": 2}}
+                  },
+                  {
+                    "fieldName": "claim_to_sum_insured_ratio",
+                    "displayName": "Claim / insured",
+                    "format": {"type": "number-plain", "decimalPlaces": {"type": "max", "places": 2}},
+                    "style": {
+                      "type": "basic",
+                      "rules": [
+                        {"condition": {"operand": {"type": "data-value", "value": "1"}, "operator": ">="},
+                         "backgroundColor": {"themeColorType": "visualizationColors", "position": 1}}
+                      ]
+                    }
+                  },
+                  {"fieldName": "days_to_report", "displayName": "Days to report"},
+                  {"fieldName": "claim_status", "displayName": "Status"},
+                  {"fieldName": "review_flag", "displayName": "Flag"}
+                ]
+              },
+              "frame": {"showTitle": true, "title": "Flagged claims"}
+            }
+          },
+          "position": {"x": 0, "y": 20, "width": 12, "height": 8}
+        }
+      ]
+    },
+    {
+      "name": "filters",
+      "displayName": "Filters",
+      "pageType": "PAGE_TYPE_GLOBAL_FILTERS",
+      "layoutVersion": "GRID_V1",
+      "layout": [
+        {
+          "widget": {
+            "name": "filter_incident_date",
+            "queries": [
+              {
+                "name": "q_incident_date",
+                "query": {
+                  "datasetName": "ds_claims",
+                  "fields": [{"name": "incident_date", "expression": "`incident_date`"}],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "filter-date-range-picker",
+              "encodings": {"fields": [{"fieldName": "incident_date", "displayName": "Incident date", "queryName": "q_incident_date"}]},
+              "frame": {"showTitle": true, "title": "Incident date"}
+            }
+          },
+          "position": {"x": 0, "y": 0, "width": 4, "height": 2}
+        },
+        {
+          "widget": {
+            "name": "filter_severity",
+            "queries": [
+              {
+                "name": "q_severity",
+                "query": {
+                  "datasetName": "ds_claims",
+                  "fields": [{"name": "incident_severity", "expression": "`incident_severity`"}],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "filter-multi-select",
+              "encodings": {"fields": [{"fieldName": "incident_severity", "displayName": "Severity", "queryName": "q_severity"}]},
+              "frame": {"showTitle": true, "title": "Severity"}
+            }
+          },
+          "position": {"x": 4, "y": 0, "width": 4, "height": 2}
+        },
+        {
+          "widget": {
+            "name": "filter_incident_type",
+            "queries": [
+              {
+                "name": "q_incident_type",
+                "query": {
+                  "datasetName": "ds_claims",
+                  "fields": [{"name": "incident_type", "expression": "`incident_type`"}],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "filter-multi-select",
+              "encodings": {"fields": [{"fieldName": "incident_type", "displayName": "Incident type", "queryName": "q_incident_type"}]},
+              "frame": {"showTitle": true, "title": "Incident type"}
+            }
+          },
+          "position": {"x": 8, "y": 0, "width": 4, "height": 2}
+        },
+        {
+          "widget": {
+            "name": "filter_status",
+            "queries": [
+              {
+                "name": "q_status",
+                "query": {
+                  "datasetName": "ds_claims",
+                  "fields": [{"name": "claim_status", "expression": "`claim_status`"}],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "filter-multi-select",
+              "encodings": {"fields": [{"fieldName": "claim_status", "displayName": "Status", "queryName": "q_status"}]},
+              "frame": {"showTitle": true, "title": "Claim status"}
+            }
+          },
+          "position": {"x": 0, "y": 2, "width": 4, "height": 2}
+        },
+        {
+          "widget": {
+            "name": "filter_policy_type",
+            "queries": [
+              {
+                "name": "q_policy_type",
+                "query": {
+                  "datasetName": "ds_claims",
+                  "fields": [{"name": "policy_type", "expression": "`policy_type`"}],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "filter-multi-select",
+              "encodings": {"fields": [{"fieldName": "policy_type", "displayName": "Policy type", "queryName": "q_policy_type"}]},
+              "frame": {"showTitle": true, "title": "Policy type"}
+            }
+          },
+          "position": {"x": 4, "y": 2, "width": 4, "height": 2}
+        },
+        {
+          "widget": {
+            "name": "filter_review_flag",
+            "queries": [
+              {
+                "name": "q_review_flag",
+                "query": {
+                  "datasetName": "ds_claims",
+                  "fields": [{"name": "review_flag", "expression": "`review_flag`"}],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "filter-multi-select",
+              "encodings": {"fields": [{"fieldName": "review_flag", "displayName": "Review flag", "queryName": "q_review_flag"}]},
+              "frame": {"showTitle": true, "title": "Review flag"}
+            }
+          },
+          "position": {"x": 8, "y": 2, "width": 4, "height": 2}
+        }
+      ]
+    }
+  ],
+  "uiSettings": {
+    "theme": {
+      "canvasBackgroundColor": {"light": "#FCFCFC", "dark": "#1F272D"},
+      "widgetBackgroundColor": {"light": "#FFFFFF", "dark": "#11171C"},
+      "fontColor": {"light": "#11171C", "dark": "#E8ECF0"},
+      "selectionColor": {"light": "#2272B4", "dark": "#8ACAFF"},
+      "visualizationColors": ["#FFA600", "#FF7054", "#DE5582", "#995495", "#4E5185", "#1D425C", "#99DDB4"],
+      "widgetHeaderAlignment": "LEFT"
+    }
+  }
+}
