@@ -1,0 +1,127 @@
+# Transcript section: "Apps" -- the Lakebase half.
+#
+# The transcript creates a Postgres "database instance" by clicking, then makes a synced table out
+# of a Delta table so the web app can read it with low latency: "if we go always through the SQL
+# warehouse to access our data... you would always have some kind of latency because the SQL
+# warehouse is more of an analytical compute option". That reasoning is sound and unchanged; the
+# product underneath it is not. The video's Provisioned Lakebase ("instance") is retired, and
+# today's Autoscaling Lakebase splits that single object into a project, a branch, an endpoint and
+# a database.
+#
+# WHY THIS IS IN THE BUNDLE AT ALL. These three resources were first created by hand with
+# `databricks postgres create-project / create-catalog / create-synced-table`, which worked but
+# left the repo an incomplete description of the workspace: a fresh clone plus `bundle deploy`
+# produced the dashboard and the Genie space but no database. Declaring them here closes that gap
+# and buys the same per-target retargeting the dashboard has -- see `source_table_full_name` below.
+#
+# EVERY FIELD HERE IS MARKED [Beta] in the bundle schema. That is the trade for declaring Lakebase
+# declaratively today; the shapes may move. The equivalent CLI calls are in the Lakebase docs and
+# were what this file replaced, so falling back is a known path rather than a rewrite.
+
+resources:
+  # --- The project: the container ------------------------------------------------------------
+  # Creating it auto-provisions a `production` branch, a `primary` read-write endpoint and a
+  # `databricks_postgres` database. None of those three are declared here, deliberately: they come
+  # into existence with the project, and declaring them again would mean asking the bundle to
+  # create what already exists.
+  postgres_projects:
+    lakebase:
+      # TARGET-SUFFIXED, and this is not cosmetic. Unlike a dashboard or a job, Lakebase resources
+      # are NOT renamed by development mode -- `bundle validate` resolves project_id identically
+      # for dev and prod. Both targets in this bundle point at the same workspace host, so a
+      # shared name means `-t prod` would fight `-t dev` over the same project and catalog.
+      # ${bundle.target} restores the isolation that mode: development gives everything else.
+      #
+      # RFC 1123 applies to project_id: lowercase letters, numbers and hyphens only, so a hyphen
+      # separator here rather than the underscore used for the catalog below.
+      project_id: smart-claims-${bundle.target}
+      display_name: Smart Claims (${bundle.target})
+      pg_version: 17
+
+      # THE FIELD THAT MATTERS ON TEARDOWN. A plain delete is a SOFT delete: the project is
+      # retained for 7 days and, critically, KEEPS ITS NAME RESERVED for that whole window. A
+      # `bundle destroy` followed by a redeploy would otherwise fail with "a soft-deleted project
+      # currently has this resource name". Setting this true makes destroy a hard delete, so the
+      # name is immediately reusable.
+      #
+      # The safety net it gives up is real -- an accidental destroy becomes unrecoverable rather
+      # than restorable for a week. That is the right trade for a project whose only contents are
+      # a synced copy of a gold table that can be rebuilt in under a minute. It would be the wrong
+      # trade for a project holding app-written data.
+      purge_on_delete: true
+
+      # Left unset: default_endpoint_settings. On this workspace tier the suspend timeout cannot
+      # be modified at all (`Auto-suspend timeout cannot be modified for this workspace tier`), so
+      # specifying it would be a declaration the platform quietly refuses. The endpoint runs at
+      # 1 CU with a 24h suspend, and the only working idle control is disabling the endpoint:
+      #
+      #   databricks postgres update-endpoint <endpoint-path> spec.disabled \
+      #     --json '{"spec": {"disabled": true}}'
+
+  # --- The catalog: the bridge into Unity Catalog ---------------------------------------------
+  # Without this, the project exists and Postgres runs, but nothing in Unity Catalog can see it --
+  # `catalogs list` shows no change and no SQL warehouse can reach the data. This registration is
+  # what makes the synced table below addressable as a three-part name.
+  #
+  # It registers a DATABASE, not the project, so it is one-per-database rather than one-per-
+  # project. UC reports the result as a MANAGED_ONLINE_CATALOG with a null storage_root, because
+  # it owns no storage of its own -- the bytes live in the branch.
+  postgres_catalogs:
+    lakebase_catalog:
+      # Suffixed for the same reason as project_id above. Underscores, because a Unity Catalog
+      # catalog name is an SQL identifier rather than an RFC 1123 resource id.
+      catalog_id: smart_claims_lakebase_${bundle.target}
+      branch: projects/${resources.postgres_projects.lakebase.project_id}/branches/production
+      # Underscore form: the Postgres database NAME, not the hyphenated resource path
+      # (`.../databases/databricks-postgres`). The two are not interchangeable.
+      postgres_database: databricks_postgres
+
+  # --- The synced table: the copy the app actually reads --------------------------------------
+  postgres_synced_tables:
+    claims_lookup:
+      # Three-part name INSIDE the catalog declared above, so it inherits the target suffix.
+      synced_table_id: ${resources.postgres_catalogs.lakebase_catalog.catalog_id}.public.customer_claim_policy_telematics
+
+      # THE REASON THIS FILE IS WORTH MORE THAN THE CLI CALLS IT REPLACED. Resolved per target, so
+      # the sync follows the medallion layer rather than being pinned to whichever schema happened
+      # to exist when it was written:
+      #
+      #   dev  -> smart_claims_dev.dev_keqingli1129_gold.customer_claim_policy_telematics
+      #   prod -> smart_claims_dev.gold.customer_claim_policy_telematics
+      #
+      # Through the schema RESOURCE, not ${var.gold_schema}, for the same reason
+      # transformations.pipeline.yml does it: development mode rewrites the schema name, and only
+      # the resource reference picks that up.
+      source_table_full_name: ${var.catalog}.${resources.schemas.gold.name}.customer_claim_policy_telematics
+
+      # Verified unique and non-null on the source before this was written -- 12,996 rows, 12,996
+      # distinct, 0 null. A non-unique key is accepted here and fails later inside the sync
+      # pipeline, so it is checked with a query rather than assumed.
+      primary_key_columns:
+        - claim_number
+
+      # SNAPSHOT, and not by preference. TRIGGERED and CONTINUOUS both require the change data feed
+      # on the source, and the source is a MATERIALIZED VIEW owned by the `transformations`
+      # pipeline: it is materialized onto Delta storage, but that storage is sealed behind
+      # `spark.internal.*` properties, so `ALTER TABLE ... SET TBLPROPERTIES` is not ours to run.
+      #
+      # CONSEQUENCE, worth stating plainly: this is a ONE-TIME COPY. New claims landing in gold do
+      # not appear in Postgres until the sync is re-run. Acceptable here because what the app reads
+      # from this table is policy reference data on the submit path, and the app's own live data is
+      # written straight to its own Postgres tables.
+      scheduling_policy: SNAPSHOT
+
+      branch: projects/${resources.postgres_projects.lakebase.project_id}/branches/production
+      postgres_database: databricks_postgres
+
+      # Lets the sync create the logical database/schema objects on the Postgres side instead of
+      # failing when they are absent.
+      create_database_objects_if_missing: true
+
+      # The sync runs a managed Lakeflow pipeline, and that pipeline needs somewhere to put
+      # checkpoints and event logs. It must be a REGULAR catalog: a pipeline cannot write its event
+      # log into a Postgres-backed schema, so pointing this at the smart_claims_lakebase_<target>
+      # catalog declared above fails.
+      new_pipeline_spec:
+        storage_catalog: ${var.catalog}
+        storage_schema: default
