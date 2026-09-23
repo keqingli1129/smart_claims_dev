@@ -1,0 +1,37 @@
+# Databricks Apps runtime configuration.
+#
+# THE ENVIRONMENT BLOCK BELONGS HERE, not in the bundle. `resources.apps.*.config.env` exists in
+# the bundle JSON schema and validates happily, but the deploy silently drops it: the created app
+# has no `config` key at all, and every variable arrives unset. Cost of learning that: one
+# deploy that started cleanly and then failed on `'DATABRICKS_WAREHOUSE_ID'`.
+#
+# The bundle still parameterizes the VALUES -- see below.
+command: ["streamlit", "run", "app.py"]
+
+env:
+  # `valueFrom` names a resource attached to the app in resources/smart_claims.app.yml. The
+  # platform substitutes the real id/path at runtime, so nothing sensitive is written down, and
+  # the resource NAMES are identical across targets even when the things they point at are not.
+  - name: DATABRICKS_WAREHOUSE_ID
+    valueFrom: sql-warehouse
+
+  # Resolves to the Lakebase ENDPOINT path, which is what generate_database_credential() takes.
+  # The platform also injects PGHOST, PGDATABASE, PGUSER, PGPORT and PGSSLMODE for a postgres
+  # resource -- but NOT PGPASSWORD, because there is no static password. Auth is OAuth and the
+  # token lasts 60 minutes (measured).
+  - name: LAKEBASE_ENDPOINT
+    valueFrom: postgres
+
+  - name: CLAIMS_VOLUME
+    valueFrom: claims-volume
+
+  # HOW A STATIC FILE STILL GETS A PER-TARGET VALUE. This resource is a Unity Catalog TABLE whose
+  # `securable_full_name` the bundle builds from ${resources.schemas.gold.name} -- so it resolves
+  # to dev_keqingli1129_gold in dev and gold in prod. The app reads the answer rather than
+  # assembling it from a catalog and a schema it would otherwise have to be told separately.
+  #
+  # Attaching it is also what GRANTS the service principal SELECT on that table. Attaching the
+  # warehouse only grants CAN_USE on the warehouse; Unity Catalog permissions on the data are a
+  # separate thing, and without this the query would fail on permissions even with the right name.
+  - name: CLAIMS_TABLE
+    valueFrom: gold-claims-table

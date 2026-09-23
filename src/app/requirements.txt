@@ -1,0 +1,17 @@
+# Only what the Databricks Apps runtime does NOT already provide.
+#
+# Pre-installed (do not list): streamlit 1.38.0, flask, fastapi, dash, gradio.
+#
+# psycopg2-binary is NOT optional -- it is absent from the runtime, and a Lakebase app that
+# omits it crashes on start rather than failing at the first query. `-binary` because the
+# runtime has no build toolchain for compiling psycopg2 from source.
+psycopg2-binary==2.9.10
+
+# The warehouse path. `databricks.sql` is not part of the SDK; it is a separate package.
+databricks-sql-connector==3.7.0
+
+# Minting Lakebase OAuth tokens (w.postgres.generate_database_credential) and resolving the
+# endpoint host. Very likely present in the runtime already, but pinned because the app's
+# database access fails completely without it -- and a version floor is cheaper than a
+# mystery on deploy day.
+databricks-sdk==0.139.0

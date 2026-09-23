@@ -1,0 +1,97 @@
+# Transcript section: "Apps".
+#
+# The transcript builds this by clicking: create app, pick a framework template, attach resources,
+# install. "Now we wait a couple of minutes for the app to actually deploy and then we can access
+# it." This file is that app as a bundle resource, so it deploys and versions alongside the
+# pipelines, dashboard, Genie space and Lakebase project it depends on.
+#
+# STREAMLIT, not the AppKit TypeScript template the CLI defaults to. Two reasons: the transcript
+# itself picks Streamlit ("let's choose streamlit and let's choose data app right here"), and this
+# repo is Python throughout. The trade is real -- AppKit brings typed SQL, generated result types,
+# and a Lakebase client that refreshes OAuth tokens on its own. On the Python side the token
+# refresh is ours to write; see the cache TTL in src/app/app.py.
+#
+# WHY env LIVES HERE AND NOT IN src/app/app.yaml. app.yaml is static: it cannot interpolate
+# ${var.*} or ${resources.*}. GOLD_SCHEMA has to differ per target, so the environment block
+# belongs somewhere the bundle can resolve it. `config.env` supports `value` and `value_from`
+# alike, so nothing is lost. app.yaml keeps only the command.
+
+resources:
+  apps:
+    smart_claims:
+      # Lowercase alphanumeric and hyphens only. Development mode does NOT rename apps -- the
+      # same constraint that forced the target suffix on the Lakebase project in
+      # resources/lakebase.yml -- so the target is in the name to keep dev and prod apart in a
+      # workspace that hosts both.
+      name: smart-claims-${bundle.target}
+      description: Claim submission and review for the smart_claims lakehouse.
+
+      # Relative to this file, which sits one level down in resources/.
+      source_code_path: ../src/app
+
+      # --- what the app is allowed to touch -------------------------------------------------
+      # Each `name` here is what src/app/app.yaml's `valueFrom`, and config.env's `value_from`
+      # below, resolve against. These are also GRANTS: attaching a resource gives the app's
+      # service principal the stated permission on it. The SP is created at first deploy and is
+      # a different identity from you -- which is why the Postgres schema ownership rules in the
+      # Lakebase docs matter, and why the app must be deployed before it is ever run locally.
+      resources:
+        - name: sql-warehouse
+          description: Analytical queries over the gold layer.
+          sql_warehouse:
+            id: ${var.warehouse_id}
+            # CAN_USE, not CAN_MANAGE: the app runs queries, it does not administer the
+            # warehouse. The available values are CAN_USE, CAN_MANAGE and IS_OWNER.
+            permission: CAN_USE
+
+        - name: postgres
+          description: Lakebase Postgres -- policy lookups and the app's own claim tables.
+          postgres:
+            branch: projects/${resources.postgres_projects.lakebase.project_id}/branches/production
+            database: projects/${resources.postgres_projects.lakebase.project_id}/branches/production/databases/databricks-postgres
+            # The only value this field accepts. It lets the SP connect and CREATE -- which is
+            # exactly what it needs to own the `claims` schema it creates on first start. It does
+            # NOT grant access to schemas someone else already owns, which is the documented
+            # trap: run the app locally first and your own credentials own the schema instead.
+            permission: CAN_CONNECT_AND_CREATE
+
+        - name: claims-volume
+          description: Accident photos uploaded with a claim.
+          uc_securable:
+            securable_full_name: ${var.catalog}.${resources.schemas.landing.name}.${var.claims_volume}
+            securable_type: VOLUME
+            # WRITE_VOLUME, because the customer flow uploads images. READ_VOLUME alone would
+            # let the app list and display them but not accept new ones.
+            permission: WRITE_VOLUME
+
+        # Two jobs in one resource.
+        #
+        # (1) IT IS A GRANT. Attaching the SQL warehouse above gives the service principal
+        #     CAN_USE on the WAREHOUSE -- the compute. It says nothing about the data. Unity
+        #     Catalog permissions are separate, so without this the app's query would reach the
+        #     warehouse and then be refused by UC.
+        #
+        # (2) IT CARRIES THE RESOLVED NAME. src/app/app.yaml is static and cannot interpolate,
+        #     but the value behind a `valueFrom` can be built by the bundle. Resolving through
+        #     the schema RESOURCE picks up development mode's prefix:
+        #       dev  -> smart_claims_dev.dev_keqingli1129_gold.customer_claim_policy_telematics
+        #       prod -> smart_claims_dev.gold.customer_claim_policy_telematics
+        #     so the app is told the answer instead of assembling it from parts.
+        - name: gold-claims-table
+          description: The gold claims table the admin views aggregate over.
+          uc_securable:
+            securable_full_name: ${var.catalog}.${resources.schemas.gold.name}.customer_claim_policy_telematics
+            securable_type: TABLE
+            permission: SELECT
+
+      # --- runtime environment ----------------------------------------------------------------
+      # DELIBERATELY ABSENT: a `config:` block with `command` and `env`.
+      #
+      # The bundle schema has resources.apps.*.config.env, complete with `value` and `value_from`,
+      # and `bundle validate --strict` accepts it. The deploy then discards it: the created app
+      # carries no `config` key, and the app starts with every variable unset. That failure is
+      # silent at deploy time and only visible once the app runs.
+      #
+      # So the runtime environment lives in src/app/app.yaml, which is where the Databricks Apps
+      # documentation says to put it. The values are still parameterized per target -- through the
+      # RESOURCES above, which the bundle does resolve.
