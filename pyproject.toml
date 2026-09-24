@@ -21,6 +21,13 @@ dev = [
     "databricks-sdk[notebook]>=0.139.0",
 ]
 
+app = [                              # ← add this
+    "streamlit",
+    "psycopg2-binary",
+    "databricks-sql-connector",
+    "databricks-sdk",
+]
+
 [project.scripts]
 main = "smart_claims_dev.main:main"
 
