@@ -21,7 +21,11 @@ dev = [
     "databricks-sdk[notebook]>=0.139.0",
 ]
 
-app = [                              # ← add this
+# Local-only, for running and editing the Streamlit app in src/app/. Deliberately a dependency
+# group rather than [project] dependencies: those ship in the wheel that every job and pipeline
+# installs, and none of them needs Streamlit. The deployed app installs from
+# src/app/requirements.txt instead, which is why the two lists overlap.
+app = [
     "streamlit",
     "psycopg2-binary",
     "databricks-sql-connector",
