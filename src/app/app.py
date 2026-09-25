@@ -130,34 +130,6 @@ def lakebase_claim_count() -> int:
         cur.execute(f"SELECT count(*) FROM {PG_CLAIMS_TABLE}")
         return cur.fetchone()[0]
 
-
-# --- page ---------------------------------------------------------------------------------------
-st.title("🚗 Smart Claims")
-st.caption(f"Signed in as **{current_user()}** · queries run as the app's service principal")
-
-st.subheader("Connectivity check")
-st.write(
-    "Both backends should report the same number. They are the same data: the Lakebase row is a "
-    "snapshot copy of the gold table, synced once. A mismatch means the snapshot has gone stale "
-    "relative to gold -- expected behaviour for SNAPSHOT sync, not a bug."
-)
-
-left, right = st.columns(2)
-
-with left:
-    st.markdown("**SQL warehouse** — `gold` (Delta)")
-    try:
-        st.metric("Claims", f"{warehouse_claim_count():,}")
-    except Exception as err:  # noqa: BLE001 -- surface the real cause on the page
-        st.error(f"Warehouse query failed: {err}")
-
-with right:
-    st.markdown("**Lakebase** — `public` (Postgres)")
-    try:
-        st.metric("Claims", f"{lakebase_claim_count():,}")
-    except Exception as err:  # noqa: BLE001
-        st.error(f"Lakebase query failed: {err}")
-
 # --- assistant ----------------------------------------------------------------------------------
 @st.cache_resource
 def openai_client() -> OpenAI:
@@ -189,79 +161,139 @@ SYSTEM_PROMPT = (
 # always prepended and never counted here.
 MAX_HISTORY_TURNS = 12
 
-st.subheader("Assistant")
-st.caption(f"Model `{OPENAI_MODEL}` · no access to claims data — see the note below")
 
-# st.session_state survives the script re-running, which ordinary variables do not: Streamlit
-# executes this file top to bottom on every interaction, so a plain list would be empty again by
-# the time the next message arrived. It is per browser session -- two people using the app have
-# separate conversations, and a refresh starts over.
-if "chat_history" not in st.session_state:
-    st.session_state.chat_history = []
+# --- screens ------------------------------------------------------------------------------------
+# One function per tab. Streamlit re-runs this whole file on every interaction, so these are called
+# fresh each time -- they hold no state beyond st.session_state. Splitting them out now, while
+# there are only three, keeps the file navigable once the claim submission flow and the admin
+# screens land.
+def render_customer() -> None:
+    st.subheader("Submit a claim")
+    st.info(
+        "Not built yet. This is where a customer uploads a photo of the damage, the model "
+        "classifies its severity, and the claim is submitted through four automated checks."
+    )
 
-# Replay the conversation. Necessary, not decorative: the re-run wipes the rendered page, so
-# without this only the newest message would be visible.
-for message in st.session_state.chat_history:
-    with st.chat_message(message["role"]):
-        st.write(message["content"])
 
-prompt = st.chat_input("Ask about insurance terms, or draft a claim description...")
-if prompt:
-    st.session_state.chat_history.append({"role": "user", "content": prompt})
-    with st.chat_message("user"):
-        st.write(prompt)
+def render_admin() -> None:
+    st.subheader("Claims review")
+    st.info(
+        "Not built yet. This is where the portfolio overview and the review queue will live -- "
+        "aggregates from the gold table, and the claims this app has taken in."
+    )
 
-    with st.chat_message("assistant"):
+
+def render_assistant() -> None:
+    st.caption(f"Model `{OPENAI_MODEL}` · no access to claims data — see the note below")
+
+
+    # st.session_state survives the script re-running, which ordinary variables do not: Streamlit
+    # executes this file top to bottom on every interaction, so a plain list would be empty again by
+    # the time the next message arrived. It is per browser session -- two people using the app have
+    # separate conversations, and a refresh starts over.
+    if "chat_history" not in st.session_state:
+        st.session_state.chat_history = []
+
+    # Replay the conversation. Necessary, not decorative: the re-run wipes the rendered page, so
+    # without this only the newest message would be visible.
+    for message in st.session_state.chat_history:
+        with st.chat_message(message["role"]):
+            st.write(message["content"])
+
+    prompt = st.chat_input("Ask about insurance terms, or draft a claim description...")
+    if prompt:
+        st.session_state.chat_history.append({"role": "user", "content": prompt})
+        with st.chat_message("user"):
+            st.write(prompt)
+
+        with st.chat_message("assistant"):
+            try:
+                stream = openai_client().chat.completions.create(
+                    model=OPENAI_MODEL,
+                    messages=(
+                        [{"role": "system", "content": SYSTEM_PROMPT}]
+                        + st.session_state.chat_history[-MAX_HISTORY_TURNS:]
+                    ),
+                    stream=True,
+                    # Without this, a streamed response carries NO usage at all and the token count
+                    # below is always None -- verified against the API, not assumed.
+                    stream_options={"include_usage": True},
+                )
+
+                usage = {}
+
+                def tokens(chunks) -> str:
+                    """Yield text as it arrives; capture usage from the final chunk on the way past.
+
+                    st.write_stream renders each yielded string immediately, which is what makes the
+                    answer appear progressively instead of after a long pause. Usage arrives in a
+                    LAST chunk that carries no content, hence collecting it as a side effect here
+                    rather than returning it.
+                    """
+                    for chunk in chunks:
+                        if getattr(chunk, "usage", None):
+                            usage["total"] = chunk.usage.total_tokens
+                        if chunk.choices and chunk.choices[0].delta.content:
+                            yield chunk.choices[0].delta.content
+
+                answer = st.write_stream(tokens(stream))
+                st.session_state.chat_history.append({"role": "assistant", "content": answer})
+                if usage.get("total"):
+                    st.caption(f"{usage['total']} tokens")
+            except Exception as err:  # noqa: BLE001 -- the page is the only place errors are visible
+                st.error(f"Chat failed: {err}")
+                # Drop the unanswered question, or it is re-sent with every later message and the
+                # model keeps seeing a turn it never replied to.
+                st.session_state.chat_history.pop()
+
+    if st.session_state.chat_history and st.button("Clear conversation"):
+        st.session_state.chat_history = []
+        st.rerun()
+
+    st.info(
+        "This assistant answers from general knowledge only. It is deliberately cut off from the "
+        "claims data: a language model asked for a total would produce a plausible number rather "
+        "than a true one. For real figures use the Genie space or the admin views."
+    )
+
+
+def render_diagnostics() -> None:
+    """The P5 connectivity check, kept but demoted.
+
+    It proves both backends are reachable, which was the whole app a few steps ago. A claims
+    handler never needs it, so it moves out of the main flow rather than being deleted -- when a
+    screen misbehaves, "can the app reach its databases at all" is the first question worth
+    answering.
+
+    NOTE: no st.expander in here. This function is called from inside one, and Streamlit raises
+    StreamlitAPIException on a nested expander.
+    """
+    st.write(
+        "Both backends should report the same number. They are the same data: the Lakebase row "
+        "is a snapshot copy of the gold table, synced once. A mismatch means the snapshot has "
+        "gone stale relative to gold -- expected behaviour for SNAPSHOT sync, not a bug."
+    )
+    left, right = st.columns(2)
+    with left:
+        st.markdown("**SQL warehouse** — `gold` (Delta)")
         try:
-            stream = openai_client().chat.completions.create(
-                model=OPENAI_MODEL,
-                messages=(
-                    [{"role": "system", "content": SYSTEM_PROMPT}]
-                    + st.session_state.chat_history[-MAX_HISTORY_TURNS:]
-                ),
-                stream=True,
-                # Without this, a streamed response carries NO usage at all and the token count
-                # below is always None -- verified against the API, not assumed.
-                stream_options={"include_usage": True},
-            )
+            st.metric("Claims", f"{warehouse_claim_count():,}")
+        except Exception as err:  # noqa: BLE001 -- surface the real cause on the page
+            st.error(f"Warehouse query failed: {err}")
+    with right:
+        st.markdown("**Lakebase** — `public` (Postgres)")
+        try:
+            st.metric("Claims", f"{lakebase_claim_count():,}")
+        except Exception as err:  # noqa: BLE001
+            st.error(f"Lakebase query failed: {err}")
 
-            usage = {}
-
-            def tokens(chunks) -> str:
-                """Yield text as it arrives; capture usage from the final chunk on the way past.
-
-                st.write_stream renders each yielded string immediately, which is what makes the
-                answer appear progressively instead of after a long pause. Usage arrives in a
-                LAST chunk that carries no content, hence collecting it as a side effect here
-                rather than returning it.
-                """
-                for chunk in chunks:
-                    if getattr(chunk, "usage", None):
-                        usage["total"] = chunk.usage.total_tokens
-                    if chunk.choices and chunk.choices[0].delta.content:
-                        yield chunk.choices[0].delta.content
-
-            answer = st.write_stream(tokens(stream))
-            st.session_state.chat_history.append({"role": "assistant", "content": answer})
-            if usage.get("total"):
-                st.caption(f"{usage['total']} tokens")
-        except Exception as err:  # noqa: BLE001 -- the page is the only place errors are visible
-            st.error(f"Chat failed: {err}")
-            # Drop the unanswered question, or it is re-sent with every later message and the
-            # model keeps seeing a turn it never replied to.
-            st.session_state.chat_history.pop()
-
-if st.session_state.chat_history and st.button("Clear conversation"):
-    st.session_state.chat_history = []
-    st.rerun()
-
-st.info(
-    "This assistant answers from general knowledge only. It is deliberately cut off from the "
-    "claims data: a language model asked for a total would produce a plausible number rather "
-    "than a true one. For real figures use the Genie space or the admin views."
-)
-
-with st.expander("Runtime environment"):
+    st.divider()
+    st.markdown("**Runtime environment**")
+    st.caption(
+        "What the container actually received. These come from `valueFrom` bindings in "
+        "src/app/app.yaml; an `(unset)` means a binding did not resolve, which is otherwise "
+        "invisible until something tries to use it."
+    )
     st.write(
         {
             "CLAIMS_TABLE": CLAIMS_TABLE or "(unset)",
@@ -288,3 +320,27 @@ with st.expander("Runtime environment"):
                                         if k.lower().startswith("x-forwarded")}})
     except Exception:
         st.write("headers unavailable (local run)")
+
+
+# --- page ---------------------------------------------------------------------------------------
+st.title("🚗 Smart Claims")
+st.caption(f"Signed in as **{current_user()}** · queries run as the app's service principal")
+
+# The transcript's two modes: "it has the customer mode which we are in currently as well as the
+# admin mode". Worth being explicit about what this is -- a workflow switch, NOT a security
+# boundary. Every query runs as the app's service principal whichever tab is open, and nothing
+# here checks who you are. Real separation would mean per-user authorization, a different design.
+tab_customer, tab_admin, tab_assistant = st.tabs(["Customer", "Admin", "Assistant"])
+
+with tab_customer:
+    render_customer()
+
+with tab_admin:
+    render_admin()
+
+with tab_assistant:
+    render_assistant()
+
+# Outside the tabs and collapsed by default: reachable from any screen, in the way of none.
+with st.expander("Diagnostics"):
+    render_diagnostics()
