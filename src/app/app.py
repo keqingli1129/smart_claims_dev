@@ -159,6 +159,14 @@ def portfolio_kpis() -> dict:
     }
 
 
+# The categories the gold table actually uses, so a submitted claim is comparable with the
+# portfolio rather than introducing values nothing else knows about. Hardcoded rather than queried:
+# six values that do not change are not worth a warehouse round trip on every form render -- but
+# they DO have to stay in step with the source, so they are named here where that is visible.
+INCIDENT_TYPES = ["Collision", "Fire", "Flood", "Hail", "Theft", "Vandalism"]
+SEVERITIES = ["Minor Damage", "Major Damage", "Total Loss"]
+
+
 # One row per policy, newest claim first. The synced table holds one row per CLAIM, so a policy
 # with several historic claims appears several times; DISTINCT ON collapses that. The policy terms
 # are identical across those rows, so any one of them answers "what does this policy cover".
@@ -357,8 +365,106 @@ def render_customer() -> None:
         )
 
     st.divider()
+    _render_claim_form(policy)
+
+
+def _render_claim_form(policy: dict) -> None:
+    """The claim details, gated behind a successful policy lookup.
+
+    st.form batches the inputs: without it Streamlit re-runs this whole file on every keystroke,
+    which would re-trigger the policy lookup on each character typed into the notes box. Inside a
+    form, nothing happens until the submit button is pressed.
+    """
+    from datetime import date
+
+    st.markdown("**Claim details**")
+
+    with st.form("claim_details"):
+        left, right = st.columns(2)
+        with left:
+            incident_date = st.date_input(
+                "Date of the incident",
+                value=date.today(),
+                # A claim cannot be made for something that has not happened. The widget refusing
+                # is clearer than a validation message after the fact.
+                max_value=date.today(),
+            )
+            incident_type = st.selectbox("What happened?", INCIDENT_TYPES)
+            claim_amount = st.number_input(
+                "Amount claimed (USD)", min_value=1.0, max_value=1_000_000.0,
+                value=10_000.0, step=500.0, format="%.2f",
+            )
+        with right:
+            severity = st.selectbox(
+                "How bad is the damage?", SEVERITIES,
+                help="Your own assessment. The damage model's opinion is compared against it.",
+            )
+            location = st.text_input("Where did it happen?", placeholder="City or address")
+            vehicles = st.number_input("Vehicles involved", min_value=1, max_value=20, value=1)
+
+        notes = st.text_area("Anything else we should know?", placeholder="Optional")
+        submitted = st.form_submit_button("Review claim", type="primary")
+
+    if not submitted:
+        return
+
+    # Validation the widgets cannot express. The amount bound is a sanity check, not the coverage
+    # check -- whether the policy actually covers it is one of the four automated checks at
+    # submission, and is deliberately NOT pre-judged here.
+    problems = []
+    if not location.strip():
+        problems.append("Tell us where the incident happened.")
+    if incident_date < policy["effective"]:
+        problems.append(
+            f"The incident date is before this policy began ({policy['effective']})."
+        )
+    if problems:
+        for problem in problems:
+            st.error(problem)
+        return
+
+    # Held in session state, not written anywhere. The write, and the four checks that decide
+    # whether the claim clears automatically, are the next step.
+    st.session_state.pending_claim = {
+        "policy_number": policy["policy_number"],
+        "customer_name": policy["customer_name"],
+        "incident_date": incident_date,
+        "incident_type": incident_type,
+        "claim_amount": float(claim_amount),
+        "self_assessed_severity": severity,
+        "accident_location": location.strip(),
+        "vehicles_involved": int(vehicles),
+        "notes": notes.strip() or None,
+        "submitted_by": current_user(),
+    }
+
+    st.success("Ready to submit.")
+    pending = st.session_state.pending_claim
+    st.dataframe(
+        pd.DataFrame(
+            [
+                ("Policy", pending["policy_number"]),
+                ("Policy holder", pending["customer_name"]),
+                ("Incident", f"{pending['incident_type']} on {pending['incident_date']}"),
+                ("Location", pending["accident_location"]),
+                ("Amount claimed", f"${pending['claim_amount']:,.2f}"),
+                ("Your assessment", pending["self_assessed_severity"]),
+                ("Vehicles involved", str(pending["vehicles_involved"])),
+                ("Filed by", pending["submitted_by"]),
+            ],
+            columns=["Field", "Value"],
+        ),
+        hide_index=True,
+        use_container_width=True,
+    )
+
+    # Named now so the shape of what follows is visible, and so a reader can see that the amount
+    # is not being silently judged against the policy at this stage.
     st.info(
-        "Next: photo upload, the claim details form, and the automated checks. Not built yet."
+        "Nothing has been submitted yet. Submitting will run four checks -- your severity "
+        "assessment against the damage model, the amount against your sum insured, the incident "
+        "date against your coverage window, and recorded speed where a telematics device is "
+        "fitted. That step is not built yet."
     )
 
 
