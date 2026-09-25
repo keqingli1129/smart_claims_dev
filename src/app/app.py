@@ -122,6 +122,42 @@ def warehouse_claim_count() -> int:
         return cur.fetchone()[0]
 
 
+@st.cache_data(ttl=300)
+def portfolio_kpis() -> dict:
+    """Every headline number in ONE query.
+
+    Four separate `SELECT count(...)` calls would mean four round trips to the warehouse and four
+    full scans of the same 13k rows. One pass computing six aggregates costs the same as computing
+    one, and the whole row arrives together so the metrics can never disagree with each other --
+    which they could if they were fetched seconds apart while the table was being written.
+
+    The 5 minute TTL matches the data: the gold table is rebuilt by an hourly job, so anything
+    shorter re-queries for numbers that cannot have moved.
+    """
+    if not CLAIMS_TABLE:
+        raise RuntimeError("CLAIMS_TABLE is unset -- is the gold-claims-table resource attached?")
+    with warehouse_connection().cursor() as cur:
+        cur.execute(f"""
+            SELECT
+                count(*)                                                        AS total_claims,
+                round(sum(claim_amount), 2)                                     AS total_exposure,
+                round(avg(claim_amount), 2)                                     AS avg_claim,
+                sum(CASE WHEN incident_within_coverage THEN 0 ELSE 1 END)       AS outside_coverage,
+                sum(CASE WHEN claim_to_sum_insured_ratio > 1 THEN 1 ELSE 0 END) AS over_insured,
+                max(incident_date)                                              AS latest_incident
+            FROM {CLAIMS_TABLE}
+        """)
+        row = cur.fetchone()
+    return {
+        "total_claims": int(row[0] or 0),
+        "total_exposure": float(row[1] or 0),
+        "avg_claim": float(row[2] or 0),
+        "outside_coverage": int(row[3] or 0),
+        "over_insured": int(row[4] or 0),
+        "latest_incident": row[5],
+    }
+
+
 @st.cache_data(ttl=60)
 def lakebase_claim_count() -> int:
     # A fresh cursor per call, but the CONNECTION is cached -- opening a Postgres connection per
@@ -176,10 +212,50 @@ def render_customer() -> None:
 
 
 def render_admin() -> None:
-    st.subheader("Claims review")
+    st.subheader("Portfolio overview")
+
+    # A cold serverless warehouse takes ~17 seconds to answer its first query. Without a spinner
+    # the page just sits there and looks broken.
+    try:
+        with st.spinner("Querying the gold layer..."):
+            kpis = portfolio_kpis()
+    except Exception as err:  # noqa: BLE001 -- the page is the only place errors are visible
+        st.error(f"Could not load portfolio figures: {err}")
+        return
+
+    if kpis["total_claims"] == 0:
+        st.warning("No claims in the gold table. Has the transformations pipeline run?")
+        return
+
+    total = kpis["total_claims"]
+    a, b, c, d = st.columns(4)
+    a.metric("Claims", f"{total:,}")
+    b.metric("Exposure", f"${kpis['total_exposure']:,.0f}")
+    # Percentages alongside the counts: "10,556 claims" means little on its own, "81% of the book"
+    # is the number someone would act on.
+    c.metric(
+        "Outside coverage",
+        f"{kpis['outside_coverage'] / total:.0%}",
+        delta=f"{kpis['outside_coverage']:,} claims",
+        delta_color="off",
+    )
+    d.metric(
+        "Over sum insured",
+        f"{kpis['over_insured'] / total:.0%}",
+        delta=f"{kpis['over_insured']:,} claims",
+        delta_color="off",
+    )
+
+    # Freshness belongs next to the numbers. A KPI with no as-of date invites the assumption that
+    # it is current, and this table is rebuilt hourly from a source that stops in October 2025.
+    st.caption(
+        f"Average claim ${kpis['avg_claim']:,.0f} · most recent incident "
+        f"{kpis['latest_incident']} · figures cached for 5 minutes"
+    )
+
     st.info(
-        "Not built yet. This is where the portfolio overview and the review queue will live -- "
-        "aggregates from the gold table, and the claims this app has taken in."
+        "Review queue and per-claim detail are not built yet -- they read the claims this app "
+        "takes in, which begins with the customer submission flow."
     )
 
 
