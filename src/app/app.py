@@ -15,7 +15,9 @@ access our data... you would always have some kind of latency because the SQL wa
 of an analytical compute option".
 """
 
+import io
 import os
+from pathlib import Path
 
 import pandas as pd
 import psycopg2
@@ -157,6 +159,44 @@ def portfolio_kpis() -> dict:
         "over_insured": int(row[4] or 0),
         "latest_incident": row[5],
     }
+
+
+def claims_volume_path() -> str:
+    """The volume as a /Volumes/... path, whichever form CLAIMS_VOLUME arrives in.
+
+    A `uc_securable` valueFrom hands over the securable's full name, and for a VOLUME that is the
+    dotted three-part name -- not a filesystem path. The Files API wants a path. Rather than
+    assume which form turns up, this accepts either: a leading slash is taken as already a path,
+    anything else is treated as catalog.schema.volume and converted.
+    """
+    raw = os.getenv("CLAIMS_VOLUME", "").strip()
+    if not raw:
+        raise RuntimeError("CLAIMS_VOLUME is unset -- is the claims-volume resource attached?")
+    if raw.startswith("/"):
+        return raw.rstrip("/")
+    return "/Volumes/" + raw.replace(".", "/")
+
+
+def upload_claim_photo(uploaded, policy_number: str) -> str:
+    """Put the customer's photo in the volume and return the path it landed at.
+
+    Uploaded here rather than held until submission, for the reason the transcript's flow implies:
+    the damage model scores the image as soon as it arrives, and the customer sees the verdict
+    before filling in the rest. The cost is that abandoning the form leaves an orphaned file --
+    acceptable, and cheaper than holding megabytes in session state across every re-run.
+
+    The name carries the policy and a timestamp: two claims on one policy must not collide, and a
+    filename taken from the upload would let a customer choose where they write.
+    """
+    from datetime import datetime
+
+    suffix = Path(uploaded.name).suffix.lower() or ".png"
+    if suffix not in {".png", ".jpg", ".jpeg"}:
+        raise ValueError(f"Unsupported image type '{suffix}'. Use PNG or JPEG.")
+    stamp = datetime.now().strftime("%Y%m%dT%H%M%S")
+    path = f"{claims_volume_path()}/images/{policy_number}_{stamp}{suffix}"
+    WorkspaceClient().files.upload(path, io.BytesIO(uploaded.getvalue()), overwrite=True)
+    return path
 
 
 # The categories the gold table actually uses, so a submitted claim is comparable with the
@@ -365,7 +405,54 @@ def render_customer() -> None:
         )
 
     st.divider()
+    _render_photo_upload(policy)
+    st.divider()
     _render_claim_form(policy)
+
+
+def _render_photo_upload(policy: dict) -> None:
+    """Accident photo, uploaded to the Unity Catalog volume."""
+    st.markdown("**Photo of the damage**")
+
+    uploaded = st.file_uploader(
+        "Upload a photo", type=["png", "jpg", "jpeg"], label_visibility="collapsed",
+        help="A clear photo of the damage. PNG or JPEG.",
+    )
+
+    if uploaded is None:
+        # Not a blocker. Three of the four checks need no image, so a claim without a photo is
+        # held for review rather than refused.
+        st.caption("Optional, but a claim without a photo cannot have its severity verified.")
+        st.session_state.pop("claim_photo_path", None)
+        return
+
+    left, right = st.columns([1, 2])
+    with left:
+        st.image(uploaded, caption=uploaded.name, use_container_width=True)
+
+    with right:
+        # Re-uploading the same file on every script re-run would mean a fresh copy in the volume
+        # per keystroke elsewhere on the page. Keyed on name+size so choosing a DIFFERENT file
+        # does upload again.
+        marker = f"{uploaded.name}:{uploaded.size}"
+        if st.session_state.get("claim_photo_marker") != marker:
+            try:
+                with st.spinner("Saving the photo..."):
+                    path = upload_claim_photo(uploaded, policy["policy_number"])
+                st.session_state.claim_photo_path = path
+                st.session_state.claim_photo_marker = marker
+            except Exception as err:  # noqa: BLE001
+                st.error(f"Could not save the photo: {err}")
+                st.session_state.pop("claim_photo_path", None)
+                return
+
+        st.success("Photo saved.")
+        st.caption(f"`{st.session_state.claim_photo_path}`")
+        st.caption(f"{uploaded.size / 1024:,.0f} KB")
+        st.info(
+            "The damage model is not wired up yet. Once it is, the severity it predicts from this "
+            "photo is compared against your own assessment below."
+        )
 
 
 def _render_claim_form(policy: dict) -> None:
@@ -436,6 +523,7 @@ def _render_claim_form(policy: dict) -> None:
         "vehicles_involved": int(vehicles),
         "notes": notes.strip() or None,
         "submitted_by": current_user(),
+        "image_path": st.session_state.get("claim_photo_path"),
     }
 
     st.success("Ready to submit.")
@@ -451,6 +539,7 @@ def _render_claim_form(policy: dict) -> None:
                 ("Your assessment", pending["self_assessed_severity"]),
                 ("Vehicles involved", str(pending["vehicles_involved"])),
                 ("Filed by", pending["submitted_by"]),
+                ("Photo", pending["image_path"] or "none uploaded"),
             ],
             columns=["Field", "Value"],
         ),
