@@ -17,6 +17,7 @@ of an analytical compute option".
 
 import os
 
+import pandas as pd
 import psycopg2
 import streamlit as st
 from openai import OpenAI
@@ -158,6 +159,57 @@ def portfolio_kpis() -> dict:
     }
 
 
+@st.cache_data(ttl=300)
+def monthly_exposure(months: int = 24) -> "pd.DataFrame":
+    """Claim exposure per month, EXCLUDING the month the data ends in.
+
+    That exclusion is the whole point. The source stops on 2025-10-01, so the final month holds a
+    single day -- 249,828 against a ~7,000,000 run rate. Plotted, it reads as a 97% collapse in
+    the book rather than as "the data stops here", and a reader has no way to tell the difference
+    from the chart alone. Dropping the incomplete period is more honest than drawing it.
+    """
+    if not CLAIMS_TABLE:
+        raise RuntimeError("CLAIMS_TABLE is unset -- is the gold-claims-table resource attached?")
+    with warehouse_connection().cursor() as cur:
+        cur.execute(f"""
+            WITH m AS (
+                SELECT date_trunc('MONTH', incident_date) AS month,
+                       sum(claim_amount)                  AS exposure,
+                       count(*)                           AS claims
+                FROM {CLAIMS_TABLE}
+                GROUP BY 1
+            )
+            SELECT date_format(month, 'yyyy-MM') AS month, exposure, claims
+            FROM m
+            WHERE month < (SELECT max(month) FROM m)
+            ORDER BY month DESC
+            LIMIT {int(months)}
+        """)
+        rows = cur.fetchall()
+    frame = pd.DataFrame(rows, columns=["month", "exposure", "claims"])
+    # Fetched newest-first so LIMIT takes the RECENT months, then flipped for the chart -- a time
+    # axis has to run left to right.
+    return frame.iloc[::-1].reset_index(drop=True)
+
+
+@st.cache_data(ttl=300)
+def breakdown(column: str) -> "pd.DataFrame":
+    """Claim count and exposure grouped by one categorical column.
+
+    `column` is interpolated into the SQL, so it must never come from user input. The callers
+    below pass literals; if a filter ever feeds this, it needs an allow-list first.
+    """
+    with warehouse_connection().cursor() as cur:
+        cur.execute(f"""
+            SELECT {column} AS category, count(*) AS claims, sum(claim_amount) AS exposure
+            FROM {CLAIMS_TABLE}
+            GROUP BY {column}
+            ORDER BY claims DESC
+        """)
+        rows = cur.fetchall()
+    return pd.DataFrame(rows, columns=["category", "claims", "exposure"])
+
+
 @st.cache_data(ttl=60)
 def lakebase_claim_count() -> int:
     # A fresh cursor per call, but the CONNECTION is cached -- opening a Postgres connection per
@@ -251,6 +303,55 @@ def render_admin() -> None:
     st.caption(
         f"Average claim ${kpis['avg_claim']:,.0f} · most recent incident "
         f"{kpis['latest_incident']} · figures cached for 5 minutes"
+    )
+
+    st.divider()
+
+    # A CHART ONLY WHERE THERE IS SOMETHING TO SEE. Exposure moves month to month (6.8M-8.0M), so
+    # a trend line earns its space. The categorical splits do NOT: severity lands 4,346/4,330/4,320
+    # and status within 2.4% across five values, because the generator assigns them uniformly.
+    # Three bar charts of identical bars would imply a pattern that is not there. Those go in a
+    # table, where "these are all the same" is legible instead of disguised.
+    st.markdown("**Monthly exposure**")
+    try:
+        trend = monthly_exposure()
+        if trend.empty:
+            st.info("No complete months of history yet.")
+        else:
+            st.line_chart(trend, x="month", y="exposure", height=260)
+            st.caption(
+                f"{len(trend)} complete months to {trend['month'].iloc[-1]}. The month the data "
+                "ends in is excluded -- it holds a single day and would read as a collapse."
+            )
+    except Exception as err:  # noqa: BLE001
+        st.error(f"Could not load the trend: {err}")
+
+    st.divider()
+    st.markdown("**Breakdowns**")
+    left, right = st.columns(2)
+    for col, (column, label) in zip(
+        (left, right), (("incident_severity", "By severity"), ("claim_status", "By status"))
+    ):
+        with col:
+            st.markdown(f"*{label}*")
+            try:
+                frame = breakdown(column)
+                st.dataframe(
+                    frame,
+                    hide_index=True,
+                    use_container_width=True,
+                    column_config={
+                        "category": st.column_config.TextColumn(label.replace("By ", "").title()),
+                        "claims": st.column_config.NumberColumn("Claims", format="%d"),
+                        "exposure": st.column_config.NumberColumn("Exposure", format="$%.0f"),
+                    },
+                )
+            except Exception as err:  # noqa: BLE001
+                st.error(f"Could not load {label.lower()}: {err}")
+
+    st.caption(
+        "These categories are near-uniform in this dataset -- the generator assigns them evenly, "
+        "so the flatness is a property of the synthetic data, not a finding about claims."
     )
 
     st.info(
