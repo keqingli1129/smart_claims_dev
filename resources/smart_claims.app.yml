@@ -77,6 +77,28 @@ resources:
         #       dev  -> smart_claims_dev.dev_keqingli1129_gold.customer_claim_policy_telematics
         #       prod -> smart_claims_dev.gold.customer_claim_policy_telematics
         #     so the app is told the answer instead of assembling it from parts.
+        # The OpenAI key for the chat feature.
+        #
+        # WHAT IS AND IS NOT IN GIT. This entry names a scope and a key; the VALUE lives only in
+        # the Databricks secret store. Anyone reading this repo learns that an OpenAI key is used
+        # and where it is kept, which is the intended amount of disclosure.
+        #
+        # THE SCOPE IS NOT CREATED BY THIS BUNDLE. It was made once with
+        #     databricks secrets create-scope smart-claims-dev
+        # and the value put in with `secrets put-secret`. The bundle schema does have a
+        # `secret_scopes` resource type, but declaring an already-existing scope risks a deploy
+        # conflict, and the VALUE could never be declarative anyway. So this is the second thing
+        # (after the Lakebase GRANT in scripts/grant_lakebase_access.py) that a fresh clone plus
+        # `bundle deploy` will not reproduce on its own.
+        #
+        # READ, not WRITE or MANAGE: the app consumes the key and has no business rotating it.
+        - name: openai-key
+          description: API key for the assistant. Value lives in the Databricks secret store.
+          secret:
+            scope: smart-claims-${bundle.target}
+            key: openai-api-key
+            permission: READ
+
         - name: gold-claims-table
           description: The gold claims table the admin views aggregate over.
           uc_securable:

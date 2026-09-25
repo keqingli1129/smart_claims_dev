@@ -35,3 +35,19 @@ env:
   # separate thing, and without this the query would fail on permissions even with the right name.
   - name: CLAIMS_TABLE
     valueFrom: gold-claims-table
+
+  # The chat feature's key. Resolves to the secret VALUE, not the scope/key names -- the platform
+  # reads it out of the Databricks secret store at container start. Which also means a rotated key
+  # needs an app restart: the variable is set once, when the process starts.
+  - name: OPENAI_API_KEY
+    valueFrom: openai-key
+
+  # Model id as CONFIG, not a constant in app.py, so changing it is an app.yaml edit rather than a
+  # code change. `gpt-5.5` is the current undated alias -- it moves as OpenAI updates it, which is
+  # what you want while learning and not what you want if answers must be reproducible. Pin a
+  # dated snapshot (e.g. gpt-5.5-2026-04-23) for that.
+  #
+  # PLACEHOLDER pending the user's choice: the key can also reach gpt-5.6-luna / -sol / -terra and
+  # the mini/nano/pro tiers, whose tradeoffs postdate what I can advise on.
+  - name: OPENAI_MODEL
+    value: gpt-5.5

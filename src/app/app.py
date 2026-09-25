@@ -19,6 +19,7 @@ import os
 
 import psycopg2
 import streamlit as st
+from openai import OpenAI
 from databricks import sql
 from databricks.sdk import WorkspaceClient
 from databricks.sdk.core import Config
@@ -36,6 +37,12 @@ CLAIMS_TABLE = os.getenv("CLAIMS_TABLE", "")
 PG_CLAIMS_TABLE = f"public.{CLAIMS_TABLE.split('.')[-1]}" if CLAIMS_TABLE else ""
 
 LAKEBASE_ENDPOINT = os.getenv("LAKEBASE_ENDPOINT", "")
+
+# Model id arrives as config (see src/app/app.yaml), so switching models is a redeploy of that
+# file rather than a code change. Verified against the key: chat.completions and the newer
+# responses API both accept gpt-5.5; chat.completions is used below because its `messages` list
+# maps straight onto conversation history when that arrives.
+OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-5.5")
 
 
 # --- identity ---------------------------------------------------------------------------------
@@ -151,6 +158,109 @@ with right:
     except Exception as err:  # noqa: BLE001
         st.error(f"Lakebase query failed: {err}")
 
+# --- assistant ----------------------------------------------------------------------------------
+@st.cache_resource
+def openai_client() -> OpenAI:
+    """One client for the process. Cached for the same reason the database connections are --
+    Streamlit re-runs this whole file on every interaction, and rebuilding an HTTP client per
+    keystroke is waste. No ttl: unlike the Lakebase token, an API key does not expire on a timer.
+    """
+    key = os.environ.get("OPENAI_API_KEY")
+    if not key:
+        raise RuntimeError("OPENAI_API_KEY is unset -- is the openai-key resource attached?")
+    return OpenAI(api_key=key)
+
+
+# Constrains the model rather than trusting it. The app sits on real claims data that the model
+# CANNOT see, so the failure mode to design against is a confident invented claim number. Telling
+# it to refuse and point at Genie is cheaper than discovering a hallucinated figure in a demo.
+SYSTEM_PROMPT = (
+    "You are an assistant inside a motor insurance claims application. "
+    "Help with general insurance questions, explaining terms, and drafting claim descriptions. "
+    "You have NO access to this system's claims, policies or customers. "
+    "If asked about specific claims, numbers, totals or customers, say you cannot see the data "
+    "and suggest the Genie space or the admin screens instead. Never invent claim data."
+)
+
+# How many prior turns to resend. Every turn is re-sent in full on each request -- the API is
+# stateless, so "memory" is just the transcript travelling with the question. That means cost
+# grows with conversation length, and an unbounded history eventually hits the context limit
+# mid-conversation. Trimming to the last few exchanges keeps both bounded. The system prompt is
+# always prepended and never counted here.
+MAX_HISTORY_TURNS = 12
+
+st.subheader("Assistant")
+st.caption(f"Model `{OPENAI_MODEL}` · no access to claims data — see the note below")
+
+# st.session_state survives the script re-running, which ordinary variables do not: Streamlit
+# executes this file top to bottom on every interaction, so a plain list would be empty again by
+# the time the next message arrived. It is per browser session -- two people using the app have
+# separate conversations, and a refresh starts over.
+if "chat_history" not in st.session_state:
+    st.session_state.chat_history = []
+
+# Replay the conversation. Necessary, not decorative: the re-run wipes the rendered page, so
+# without this only the newest message would be visible.
+for message in st.session_state.chat_history:
+    with st.chat_message(message["role"]):
+        st.write(message["content"])
+
+prompt = st.chat_input("Ask about insurance terms, or draft a claim description...")
+if prompt:
+    st.session_state.chat_history.append({"role": "user", "content": prompt})
+    with st.chat_message("user"):
+        st.write(prompt)
+
+    with st.chat_message("assistant"):
+        try:
+            stream = openai_client().chat.completions.create(
+                model=OPENAI_MODEL,
+                messages=(
+                    [{"role": "system", "content": SYSTEM_PROMPT}]
+                    + st.session_state.chat_history[-MAX_HISTORY_TURNS:]
+                ),
+                stream=True,
+                # Without this, a streamed response carries NO usage at all and the token count
+                # below is always None -- verified against the API, not assumed.
+                stream_options={"include_usage": True},
+            )
+
+            usage = {}
+
+            def tokens(chunks) -> str:
+                """Yield text as it arrives; capture usage from the final chunk on the way past.
+
+                st.write_stream renders each yielded string immediately, which is what makes the
+                answer appear progressively instead of after a long pause. Usage arrives in a
+                LAST chunk that carries no content, hence collecting it as a side effect here
+                rather than returning it.
+                """
+                for chunk in chunks:
+                    if getattr(chunk, "usage", None):
+                        usage["total"] = chunk.usage.total_tokens
+                    if chunk.choices and chunk.choices[0].delta.content:
+                        yield chunk.choices[0].delta.content
+
+            answer = st.write_stream(tokens(stream))
+            st.session_state.chat_history.append({"role": "assistant", "content": answer})
+            if usage.get("total"):
+                st.caption(f"{usage['total']} tokens")
+        except Exception as err:  # noqa: BLE001 -- the page is the only place errors are visible
+            st.error(f"Chat failed: {err}")
+            # Drop the unanswered question, or it is re-sent with every later message and the
+            # model keeps seeing a turn it never replied to.
+            st.session_state.chat_history.pop()
+
+if st.session_state.chat_history and st.button("Clear conversation"):
+    st.session_state.chat_history = []
+    st.rerun()
+
+st.info(
+    "This assistant answers from general knowledge only. It is deliberately cut off from the "
+    "claims data: a language model asked for a total would produce a plausible number rather "
+    "than a true one. For real figures use the Genie space or the admin views."
+)
+
 with st.expander("Runtime environment"):
     st.write(
         {
@@ -161,6 +271,14 @@ with st.expander("Runtime environment"):
             "CLAIMS_VOLUME": os.getenv("CLAIMS_VOLUME", "(unset)"),
             "PGUSER": os.getenv("PGUSER", "(unset -- falling back to SP client id)"),
             "PGHOST_injected": os.getenv("PGHOST", "(unset)"),
+            "OPENAI_MODEL": os.getenv("OPENAI_MODEL", "(unset)"),
+            # PRESENCE AND LENGTH ONLY -- never the value. This expander renders on a page any
+            # app viewer can open, so printing the key here would leak it to everyone with access.
+            # Length is enough to tell "the binding worked" from "the binding is empty".
+            "OPENAI_API_KEY": (
+                f"set ({len(os.environ['OPENAI_API_KEY'])} chars)"
+                if os.environ.get("OPENAI_API_KEY") else "(unset)"
+            ),
         }
     )
     # Printed so the real forwarded-header names can be confirmed from the deployed app instead
