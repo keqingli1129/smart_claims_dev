@@ -17,6 +17,7 @@ of an analytical compute option".
 
 import io
 import os
+import uuid
 from pathlib import Path
 
 import pandas as pd
@@ -105,7 +106,7 @@ def lakebase_connection():
     # changes whenever the endpoint is recreated (three different values in one day of building
     # this), so asking is more reliable than trusting a value captured earlier.
     endpoint = w.postgres.get_endpoint(LAKEBASE_ENDPOINT)
-    return psycopg2.connect(
+    connection = psycopg2.connect(
         host=endpoint.status.hosts.host,
         dbname=os.getenv("PGDATABASE", "databricks_postgres"),
         user=os.getenv("PGUSER") or Config().client_id,
@@ -114,6 +115,12 @@ def lakebase_connection():
         sslmode="require",
         connect_timeout=30,
     )
+    # psycopg2 defaults autocommit to False, which means every SELECT opens a transaction that is
+    # never closed -- the connection sits "idle in transaction", holding resources for the whole
+    # 40 minutes it is cached. Reads want autocommit; the one place that needs a real transaction
+    # turns it off deliberately around the write.
+    connection.autocommit = True
+    return connection
 
 
 @st.cache_data(ttl=300)
@@ -159,6 +166,217 @@ def portfolio_kpis() -> dict:
         "over_insured": int(row[4] or 0),
         "latest_incident": row[5],
     }
+
+
+# The app's OWN tables, in its OWN schema. Nothing here touches public.* -- that is the synced
+# copy of the gold table, maintained by the sync pipeline and read-only to this app by grant.
+# Reference data flows down from the lakehouse; transactional data is born here.
+CLAIMS_SCHEMA_DDL = (
+    "CREATE SCHEMA IF NOT EXISTS claims",
+    """
+    CREATE TABLE IF NOT EXISTS claims.submitted_claim (
+        claim_number            TEXT PRIMARY KEY,
+        policy_number           TEXT        NOT NULL,
+        customer_name           TEXT,
+        incident_date           DATE        NOT NULL,
+        incident_type           TEXT,
+        accident_location       TEXT,
+        claim_amount            NUMERIC(12,2) NOT NULL,
+        self_assessed_severity  TEXT        NOT NULL,
+        predicted_severity      TEXT,
+        vehicles_involved       INTEGER,
+        notes                   TEXT,
+        image_path              TEXT,
+        submitted_by            TEXT,
+        status                  TEXT        NOT NULL,
+        submitted_at            TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+    """,
+    # One row per check per claim, rather than four boolean columns. The admin screen shows each
+    # check with its own verdict and an explanation, and a row-per-check renders without the UI
+    # knowing the list up front -- adding a fifth check later becomes a backend change only.
+    """
+    CREATE TABLE IF NOT EXISTS claims.claim_check (
+        id           SERIAL PRIMARY KEY,
+        claim_number TEXT    NOT NULL REFERENCES claims.submitted_claim(claim_number)
+                             ON DELETE CASCADE,
+        check_name   TEXT    NOT NULL,
+        passed       BOOLEAN NOT NULL,
+        detail       TEXT    NOT NULL
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS claim_check_claim_number_idx ON claims.claim_check (claim_number)",
+)
+
+
+@st.cache_resource
+def ensure_claims_schema() -> bool:
+    """Create the app's schema and tables if they are not there. Runs once per container.
+
+    WHO RUNS THIS FIRST DECIDES WHO OWNS IT. In Postgres the creator of a schema owns it, and the
+    app's service principal only holds CAN_CONNECT_AND_CREATE -- enough to create its own objects,
+    not to touch somebody else's. So if a developer runs this app locally before it has ever been
+    deployed, their personal credentials own `claims`, the service principal is locked out, and
+    the documented remedy is dropping the schema and losing whatever is in it.
+
+    Deploy first. Then local runs are harmless, because the schema already exists and IF NOT
+    EXISTS makes this a no-op.
+
+    @st.cache_resource, not cache_data: this is an effect executed once, not a value to reuse.
+    """
+    with lakebase_connection().cursor() as cur:
+        for statement in CLAIMS_SCHEMA_DDL:
+            cur.execute(statement)
+    return True
+
+
+SPEED_LIMIT_KPH = 130
+
+
+def run_claim_checks(policy: dict, claim: dict) -> list[dict]:
+    """The four automated checks, in the order the transcript presents them.
+
+    A pure function -- policy in, claim in, verdicts out. No database, no Streamlit. That is
+    deliberate: this is the only part of the submission with real business logic, and keeping it
+    free of I/O is what makes it readable and testable.
+
+    Every check returns a `detail` even when it passes, because the admin screen has to answer
+    "why was this auto-approved" as often as "why was this held".
+    """
+    checks: list[dict] = []
+
+    # 1. The damage model against the customer's own assessment. Not wired up yet, so there is
+    #    nothing to disagree with -- reported as passed-with-caveat rather than failed. Failing a
+    #    claim for a check that cannot run would hold every claim for a reason nobody can fix.
+    predicted = claim.get("predicted_severity")
+    if not predicted:
+        checks.append({
+            "check_name": "Severity match",
+            "passed": True,
+            "detail": (
+                f"No model prediction available; customer assessed "
+                f"\"{claim['self_assessed_severity']}\"."
+            ),
+        })
+    else:
+        agrees = predicted == claim["self_assessed_severity"]
+        checks.append({
+            "check_name": "Severity match",
+            "passed": agrees,
+            "detail": (
+                f"Model and customer agree on \"{predicted}\"." if agrees
+                else f"Customer assessed \"{claim['self_assessed_severity']}\" but the model "
+                     f"predicts \"{predicted}\"."
+            ),
+        })
+
+    # 2. Claimed amount against the policy ceiling.
+    sum_insured = policy.get("sum_insured")
+    if sum_insured is None:
+        checks.append({"check_name": "Policy amount", "passed": False,
+                       "detail": "The policy has no sum insured recorded."})
+    else:
+        within = claim["claim_amount"] <= sum_insured
+        checks.append({
+            "check_name": "Policy amount",
+            "passed": within,
+            "detail": (
+                f"${claim['claim_amount']:,.2f} is within the ${sum_insured:,.2f} sum insured."
+                if within else
+                f"${claim['claim_amount']:,.2f} exceeds the ${sum_insured:,.2f} sum insured."
+            ),
+        })
+
+    # 3. Was the policy actually in force on the day.
+    effective, expiry = policy.get("effective"), policy.get("expiry")
+    if not effective or not expiry:
+        checks.append({"check_name": "Policy validity", "passed": False,
+                       "detail": "The policy's coverage dates are incomplete."})
+    else:
+        in_force = effective <= claim["incident_date"] <= expiry
+        checks.append({
+            "check_name": "Policy validity",
+            "passed": in_force,
+            "detail": (
+                f"The incident falls inside the cover period ({effective} to {expiry})."
+                if in_force else
+                f"The incident on {claim['incident_date']} falls outside the cover period "
+                f"({effective} to {expiry})."
+            ),
+        })
+
+    # 4. Telematics. Only 8 of ~13,000 policies carry a device, so "no data" is overwhelmingly the
+    #    normal case and must not fail the claim -- otherwise almost every claim is held for a
+    #    reason the customer can do nothing about.
+    if not policy.get("has_telematics") or policy.get("max_speed") is None:
+        checks.append({"check_name": "Speed check", "passed": True,
+                       "detail": "No telematics device on this vehicle; speed was not checked."})
+    else:
+        within = policy["max_speed"] <= SPEED_LIMIT_KPH
+        checks.append({
+            "check_name": "Speed check",
+            "passed": within,
+            "detail": (
+                f"Peak recorded speed {policy['max_speed']:.0f} km/h is within the "
+                f"{SPEED_LIMIT_KPH} km/h threshold." if within else
+                f"Peak recorded speed {policy['max_speed']:.0f} km/h exceeds the "
+                f"{SPEED_LIMIT_KPH} km/h threshold."
+            ),
+        })
+
+    return checks
+
+
+def submit_claim(policy: dict, claim: dict) -> tuple[str, str, list[dict]]:
+    """Run the checks, write the claim and its verdicts, return (claim_number, status, checks).
+
+    The claim and its checks go in ONE transaction. A claim stored without its checks would show
+    in the review queue with no reason attached, and there would be no way to tell that from a
+    claim nobody has assessed yet.
+    """
+    from datetime import datetime
+
+    ensure_claims_schema()
+    checks = run_claim_checks(policy, claim)
+    # Any failed check sends it to a human -- the transcript's "claims that do not pass all of
+    # those out of the box checks" become reviewable.
+    status = "Approved" if all(c["passed"] for c in checks) else "Under Review"
+    claim_number = f"WEB-{datetime.now().strftime('%Y%m%d')}-{uuid.uuid4().hex[:6].upper()}"
+
+    connection = lakebase_connection()
+    connection.autocommit = False  # one transaction for the claim and its checks
+    try:
+        with connection.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO claims.submitted_claim (
+                    claim_number, policy_number, customer_name, incident_date, incident_type,
+                    accident_location, claim_amount, self_assessed_severity, predicted_severity,
+                    vehicles_involved, notes, image_path, submitted_by, status
+                ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                """,
+                (
+                    claim_number, claim["policy_number"], claim["customer_name"],
+                    claim["incident_date"], claim["incident_type"], claim["accident_location"],
+                    claim["claim_amount"], claim["self_assessed_severity"],
+                    claim.get("predicted_severity"), claim["vehicles_involved"],
+                    claim["notes"], claim.get("image_path"), claim["submitted_by"], status,
+                ),
+            )
+            for check in checks:
+                cur.execute(
+                    """INSERT INTO claims.claim_check (claim_number, check_name, passed, detail)
+                       VALUES (%s,%s,%s,%s)""",
+                    (claim_number, check["check_name"], check["passed"], check["detail"]),
+                )
+        connection.commit()
+    except Exception:
+        connection.rollback()
+        raise
+    finally:
+        connection.autocommit = True
+
+    return claim_number, status, checks
 
 
 def claims_volume_path() -> str:
@@ -547,14 +765,41 @@ def _render_claim_form(policy: dict) -> None:
         use_container_width=True,
     )
 
-    # Named now so the shape of what follows is visible, and so a reader can see that the amount
-    # is not being silently judged against the policy at this stage.
-    st.info(
-        "Nothing has been submitted yet. Submitting will run four checks -- your severity "
-        "assessment against the damage model, the amount against your sum insured, the incident "
-        "date against your coverage window, and recorded speed where a telematics device is "
-        "fitted. That step is not built yet."
+    st.caption(
+        "Submitting runs four checks: your severity assessment against the damage model, the "
+        "amount against your sum insured, the incident date against your coverage window, and "
+        "recorded speed where a telematics device is fitted."
     )
+
+    # Outside the form deliberately. st.form batches its inputs and submits once; this is a second,
+    # separate decision taken after seeing the summary -- the customer confirms what they read.
+    if st.button("Submit claim", type="primary", key="confirm_submit"):
+        try:
+            with st.spinner("Running checks and submitting..."):
+                claim_number, status, checks = submit_claim(policy, st.session_state.pending_claim)
+        except Exception as err:  # noqa: BLE001 -- the page is the only place errors are visible
+            st.error(f"Could not submit the claim: {err}")
+            return
+
+        st.session_state.pop("pending_claim", None)
+        st.session_state.pop("claim_photo_path", None)
+        st.session_state.pop("claim_photo_marker", None)
+
+        if status == "Approved":
+            st.success(f"Claim **{claim_number}** approved.")
+            st.balloons()
+            st.write("You will receive your settlement within 3 to 5 business days.")
+        else:
+            # Not phrased as a rejection. A held claim is one a person will look at, and the
+            # checks below say exactly why -- a customer who reads "declined" when they mean
+            # "queued" will call, which helps nobody.
+            st.warning(f"Claim **{claim_number}** has been submitted and is under review.")
+            st.write("One or more checks did not pass. A claims handler will look at it.")
+
+        st.markdown("**Check results**")
+        for check in checks:
+            icon = "✅" if check["passed"] else "⚠️"
+            st.markdown(f"{icon} **{check['check_name']}** — {check['detail']}")
 
 
 def render_admin() -> None:
