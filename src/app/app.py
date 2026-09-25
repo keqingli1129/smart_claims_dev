@@ -159,6 +159,53 @@ def portfolio_kpis() -> dict:
     }
 
 
+# One row per policy, newest claim first. The synced table holds one row per CLAIM, so a policy
+# with several historic claims appears several times; DISTINCT ON collapses that. The policy terms
+# are identical across those rows, so any one of them answers "what does this policy cover".
+#
+# `%s` IS A PLACEHOLDER, NOT STRING FORMATTING. The policy number comes from a text box, so it is
+# the one value in this app that an outsider controls. psycopg2 sends it separately from the SQL,
+# which is what makes `POL-1'; DROP TABLE ...` a policy number that simply does not match rather
+# than a statement. The TABLE name is interpolated because it comes from bundle config, not a user.
+POLICY_LOOKUP_SQL = """
+    SELECT DISTINCT ON (policy_number)
+           policy_number, customer_name, sum_insured, deductible,
+           policy_effective_date, policy_expiry_date, has_telematics, max_speed
+    FROM public.customer_claim_policy_telematics
+    WHERE policy_number = %s
+    ORDER BY policy_number, incident_date DESC
+"""
+
+
+@st.cache_data(ttl=120)
+def lookup_policy(policy_number: str) -> dict | None:
+    """Fetch one policy from Lakebase, or None if there is no such policy.
+
+    This is the reason Lakebase exists in this app. The same question could be asked of the gold
+    table through the SQL warehouse, but that is analytical compute: seconds, while a customer
+    waits mid-form. Here it is an indexed point lookup in Postgres -- the index added for exactly
+    this query, since the table's primary key is claim_number and this searches by policy_number.
+
+    Cached per policy number, briefly: a customer filling in a form re-triggers a script re-run on
+    every keystroke elsewhere on the page, and the lookup should not be repeated each time.
+    """
+    with lakebase_connection().cursor() as cur:
+        cur.execute(POLICY_LOOKUP_SQL, (policy_number.strip(),))
+        row = cur.fetchone()
+    if row is None:
+        return None
+    return {
+        "policy_number": row[0],
+        "customer_name": row[1],
+        "sum_insured": float(row[2]) if row[2] is not None else None,
+        "deductible": float(row[3]) if row[3] is not None else None,
+        "effective": row[4],
+        "expiry": row[5],
+        "has_telematics": bool(row[6]),
+        "max_speed": float(row[7]) if row[7] is not None else None,
+    }
+
+
 @st.cache_data(ttl=300)
 def monthly_exposure(months: int = 24) -> "pd.DataFrame":
     """Claim exposure per month, EXCLUDING the month the data ends in.
@@ -257,9 +304,61 @@ MAX_HISTORY_TURNS = 12
 # screens land.
 def render_customer() -> None:
     st.subheader("Submit a claim")
+    st.caption("Start by finding your policy.")
+
+    policy_number = st.text_input(
+        "Policy number",
+        placeholder="POL-000000",
+        help="Printed on your policy documents.",
+    ).strip()
+
+    if not policy_number:
+        st.info("Enter a policy number to begin.")
+        return
+
+    try:
+        policy = lookup_policy(policy_number)
+    except Exception as err:  # noqa: BLE001 -- the page is the only place errors are visible
+        st.error(f"Could not look up the policy: {err}")
+        return
+
+    if policy is None:
+        # Deliberately says the policy was not found and nothing else. Confirming which part of an
+        # identifier was wrong would help someone guessing at policy numbers more than it helps a
+        # customer holding their documents.
+        st.warning(f"No policy found for **{policy_number}**. Check the number and try again.")
+        return
+
+    st.success(f"Policy **{policy['policy_number']}** — {policy['customer_name']}")
+
+    a, b, c = st.columns(3)
+    a.metric("Sum insured", f"${policy['sum_insured']:,.0f}" if policy["sum_insured"] else "—")
+    b.metric("Deductible", f"${policy['deductible']:,.0f}" if policy["deductible"] else "—")
+    c.metric("Cover ends", str(policy["expiry"]) if policy["expiry"] else "—")
+
+    st.caption(
+        f"In force {policy['effective']} to {policy['expiry']} · "
+        + (
+            f"telematics fitted, peak recorded speed {policy['max_speed']:.0f} km/h"
+            if policy["has_telematics"] and policy["max_speed"] is not None
+            else "no telematics device on this vehicle"
+        )
+    )
+
+    # Stated now rather than sprung at submission. The dataset's incidents run to October 2025 and
+    # most policies have lapsed against today's date, so a customer whose cover has ended should
+    # see that before filling in a form that will be held for review because of it.
+    from datetime import date
+
+    if policy["expiry"] and policy["expiry"] < date.today():
+        st.warning(
+            f"This policy expired on {policy['expiry']}. A claim can still be submitted, but the "
+            "coverage check will fail and it will be held for review."
+        )
+
+    st.divider()
     st.info(
-        "Not built yet. This is where a customer uploads a photo of the damage, the model "
-        "classifies its severity, and the claim is submitted through four automated checks."
+        "Next: photo upload, the claim details form, and the automated checks. Not built yet."
     )
 
 
