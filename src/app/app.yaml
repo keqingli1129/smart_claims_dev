@@ -6,7 +6,28 @@
 # deploy that started cleanly and then failed on `'DATABRICKS_WAREHOUSE_ID'`.
 #
 # The bundle still parameterizes the VALUES -- see below.
-command: ["streamlit", "run", "app.py"]
+# --server.enableXsrfProtection=false is not cosmetic: without it the file uploader fails with
+# "AxiosError: Request failed with status code 400". Streamlit posts uploads to its own
+# /_stcore/upload_file endpoint with an XSRF token, and Databricks Apps serves the app behind its
+# own ingress -- the token check does not survive that hop, so every upload is rejected.
+#
+# CORS is disabled alongside it because Streamlit refuses to run XSRF-off with CORS-on and will
+# silently re-enable XSRF, putting the 400 straight back.
+#
+# THE SECURITY TRADE, stated rather than glossed: XSRF protection guards against another site
+# making a request as a signed-in user. That matters for an app open to the internet. This one is
+# not -- Databricks Apps authenticates every request before it reaches the container, and the
+# service principal's own permissions bound what any request can do. The exposure is small and the
+# alternative is an uploader that does not work.
+command: [
+  "streamlit", "run", "app.py",
+  "--server.enableXsrfProtection=false",
+  "--server.enableCORS=false",
+  # Streamlit's websocket is permessage-deflate compressed by default, which some reverse proxies
+  # mishandle -- the symptom is a connection that drops and re-establishes repeatedly, greying the
+  # page out each time. Turning compression off trades a little bandwidth for a stable socket.
+  "--server.enableWebsocketCompression=false",
+]
 
 env:
   # `valueFrom` names a resource attached to the app in resources/smart_claims.app.yml. The

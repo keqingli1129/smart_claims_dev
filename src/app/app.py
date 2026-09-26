@@ -114,6 +114,17 @@ def lakebase_connection():
         port=int(os.getenv("PGPORT", "5432")),
         sslmode="require",
         connect_timeout=30,
+        # TCP keepalives so a socket the far end has dropped is DETECTED rather than waited on.
+        # Without these, a query against a connection whose endpoint suspended underneath it
+        # blocks until the OS gives up, which can be minutes -- the page simply hangs.
+        keepalives=1,
+        keepalives_idle=30,
+        keepalives_interval=10,
+        keepalives_count=3,
+        # A hard ceiling on any single statement. Every query here is a point lookup or a small
+        # aggregate; anything running longer than 30s is stuck, and failing is more useful than
+        # a spinner that never resolves.
+        options="-c statement_timeout=30000",
     )
     # psycopg2 defaults autocommit to False, which means every SELECT opens a transaction that is
     # never closed -- the connection sits "idle in transaction", holding resources for the whole
@@ -224,7 +235,7 @@ def ensure_claims_schema() -> bool:
 
     @st.cache_resource, not cache_data: this is an effect executed once, not a value to reuse.
     """
-    with lakebase_connection().cursor() as cur:
+    with live_lakebase_connection().cursor() as cur:
         for statement in CLAIMS_SCHEMA_DDL:
             cur.execute(statement)
     return True
@@ -263,7 +274,7 @@ def list_submitted_claims(status: str | None = None) -> "pd.DataFrame":
                "claim_amount", "self_assessed_severity", "status", "submitted_by", "submitted_at",
                "failed_checks"]
     try:
-        with lakebase_connection().cursor() as cur:
+        with live_lakebase_connection().cursor() as cur:
             cur.execute(sql, (status, status))
             rows = cur.fetchall()
     except errors.UndefinedTable:
@@ -384,7 +395,7 @@ def submit_claim(policy: dict, claim: dict) -> tuple[str, str, list[dict]]:
     status = "Approved" if all(c["passed"] for c in checks) else "Under Review"
     claim_number = f"WEB-{datetime.now().strftime('%Y%m%d')}-{uuid.uuid4().hex[:6].upper()}"
 
-    connection = lakebase_connection()
+    connection = live_lakebase_connection()
     connection.autocommit = False  # one transaction for the claim and its checks
     try:
         with connection.cursor() as cur:
@@ -418,6 +429,17 @@ def submit_claim(policy: dict, claim: dict) -> tuple[str, str, list[dict]]:
         connection.autocommit = True
 
     return claim_number, status, checks
+
+
+def md_escape(text: str) -> str:
+    """Escape markdown that would otherwise be interpreted rather than shown.
+
+    A pair of dollar signs in one string makes Streamlit render everything between them as LaTeX,
+    so "$10,000.00 is within the $85,718.46 sum insured" came out as maths italics. The check
+    details are generated with currency in them and are stored in Postgres, so escaping happens
+    at DISPLAY time -- the data stays clean for anything else that reads it.
+    """
+    return text.replace("$", r"\$")
 
 
 def claims_volume_path() -> str:
@@ -496,7 +518,7 @@ def lookup_policy(policy_number: str) -> dict | None:
     Cached per policy number, briefly: a customer filling in a form re-triggers a script re-run on
     every keystroke elsewhere on the page, and the lookup should not be repeated each time.
     """
-    with lakebase_connection().cursor() as cur:
+    with live_lakebase_connection().cursor() as cur:
         cur.execute(POLICY_LOOKUP_SQL, (policy_number.strip(),))
         row = cur.fetchone()
     if row is None:
@@ -511,6 +533,31 @@ def lookup_policy(policy_number: str) -> dict | None:
         "has_telematics": bool(row[6]),
         "max_speed": float(row[7]) if row[7] is not None else None,
     }
+
+
+def live_lakebase_connection():
+    """The cached Lakebase connection, verified usable -- rebuilt if it is not.
+
+    The connection is cached for 40 minutes, but the endpoint underneath it can suspend, restart
+    or scale to zero in that window, leaving a socket that is open locally and dead remotely. A
+    query on one of those does not raise; it BLOCKS. The Lakebase documentation says to implement
+    retry logic for exactly this, and this is that.
+
+    A `SELECT 1` costs a round trip and turns a hang into a reconnect.
+    """
+    connection = lakebase_connection()
+    try:
+        with connection.cursor() as cur:
+            cur.execute("SELECT 1")
+        return connection
+    except Exception:  # noqa: BLE001 -- any failure here means "this connection is no good"
+        # Drop the cached object so the next call builds a fresh one, with a fresh OAuth token.
+        lakebase_connection.clear()
+        try:
+            connection.close()
+        except Exception:  # noqa: BLE001 -- already broken; closing is best effort
+            pass
+        return lakebase_connection()
 
 
 @st.cache_data(ttl=300)
@@ -568,7 +615,7 @@ def breakdown(column: str) -> "pd.DataFrame":
 def lakebase_claim_count() -> int:
     # A fresh cursor per call, but the CONNECTION is cached -- opening a Postgres connection per
     # query is what exhausts the pool under any real traffic.
-    with lakebase_connection().cursor() as cur:
+    with live_lakebase_connection().cursor() as cur:
         cur.execute(f"SELECT count(*) FROM {PG_CLAIMS_TABLE}")
         return cur.fetchone()[0]
 
@@ -687,7 +734,9 @@ def _render_photo_upload(policy: dict) -> None:
 
     left, right = st.columns([1, 2])
     with left:
-        st.image(uploaded, caption=uploaded.name, use_container_width=True)
+        # NOT use_container_width: st.image only accepts that from Streamlit 1.39, and the Databricks
+        # Apps runtime ships 1.38.0. width= has been valid throughout.
+        st.image(uploaded, caption=uploaded.name, width=280)
 
     with right:
         # Re-uploading the same file on every script re-run would mean a fresh copy in the volume
@@ -715,11 +764,16 @@ def _render_photo_upload(policy: dict) -> None:
 
 
 def _render_claim_form(policy: dict) -> None:
-    """The claim details, gated behind a successful policy lookup.
+    """The claim details and the submission, in ONE step.
 
-    st.form batches the inputs: without it Streamlit re-runs this whole file on every keystroke,
-    which would re-trigger the policy lookup on each character typed into the notes box. Inside a
-    form, nothing happens until the submit button is pressed.
+    An earlier version split this into "Review claim" then "Submit claim". That needed the
+    reviewed claim to survive between two separate script runs in st.session_state -- and when a
+    session was lost (a dropped websocket, a restarted container), the summary and the submit
+    button disappeared and the click went nowhere. The transcript has no review step either:
+    "we can put some additional notes and now I can basically submit".
+
+    One button, one script run: validate, run the checks, write, show the verdict. Nothing has to
+    survive a re-run, so nothing can be lost between them.
     """
     from datetime import date
 
@@ -729,8 +783,7 @@ def _render_claim_form(policy: dict) -> None:
         left, right = st.columns(2)
         with left:
             incident_date = st.date_input(
-                "Date of the incident",
-                value=date.today(),
+                "Date of the incident", value=date.today(),
                 # A claim cannot be made for something that has not happened. The widget refusing
                 # is clearer than a validation message after the fact.
                 max_value=date.today(),
@@ -749,29 +802,30 @@ def _render_claim_form(policy: dict) -> None:
             vehicles = st.number_input("Vehicles involved", min_value=1, max_value=20, value=1)
 
         notes = st.text_area("Anything else we should know?", placeholder="Optional")
-        submitted = st.form_submit_button("Review claim", type="primary")
+        st.caption(
+            "Submitting runs four checks: your severity assessment against the damage model, the "
+            "amount against your sum insured, the incident date against your coverage window, and "
+            "recorded speed where a telematics device is fitted."
+        )
+        submitted = st.form_submit_button("Submit claim", type="primary")
 
     if not submitted:
         return
 
-    # Validation the widgets cannot express. The amount bound is a sanity check, not the coverage
-    # check -- whether the policy actually covers it is one of the four automated checks at
-    # submission, and is deliberately NOT pre-judged here.
+    # Validation the widgets cannot express. The amount is bounded for sanity only -- whether the
+    # policy actually covers it is one of the four checks below, and is deliberately not
+    # pre-judged here.
     problems = []
     if not location.strip():
         problems.append("Tell us where the incident happened.")
     if incident_date < policy["effective"]:
-        problems.append(
-            f"The incident date is before this policy began ({policy['effective']})."
-        )
+        problems.append(f"The incident date is before this policy began ({policy['effective']}).")
     if problems:
         for problem in problems:
             st.error(problem)
         return
 
-    # Held in session state, not written anywhere. The write, and the four checks that decide
-    # whether the claim clears automatically, are the next step.
-    st.session_state.pending_claim = {
+    claim = {
         "policy_number": policy["policy_number"],
         "customer_name": policy["customer_name"],
         "incident_date": incident_date,
@@ -783,64 +837,34 @@ def _render_claim_form(policy: dict) -> None:
         "notes": notes.strip() or None,
         "submitted_by": current_user(),
         "image_path": st.session_state.get("claim_photo_path"),
+        "predicted_severity": None,
     }
 
-    st.success("Ready to submit.")
-    pending = st.session_state.pending_claim
-    st.dataframe(
-        pd.DataFrame(
-            [
-                ("Policy", pending["policy_number"]),
-                ("Policy holder", pending["customer_name"]),
-                ("Incident", f"{pending['incident_type']} on {pending['incident_date']}"),
-                ("Location", pending["accident_location"]),
-                ("Amount claimed", f"${pending['claim_amount']:,.2f}"),
-                ("Your assessment", pending["self_assessed_severity"]),
-                ("Vehicles involved", str(pending["vehicles_involved"])),
-                ("Filed by", pending["submitted_by"]),
-                ("Photo", pending["image_path"] or "none uploaded"),
-            ],
-            columns=["Field", "Value"],
-        ),
-        hide_index=True,
-        use_container_width=True,
-    )
+    try:
+        with st.spinner("Running checks and submitting..."):
+            claim_number, status, checks = submit_claim(policy, claim)
+    except Exception as err:  # noqa: BLE001 -- the page is the only place errors are visible
+        st.error(f"Could not submit the claim: {err}")
+        return
 
-    st.caption(
-        "Submitting runs four checks: your severity assessment against the damage model, the "
-        "amount against your sum insured, the incident date against your coverage window, and "
-        "recorded speed where a telematics device is fitted."
-    )
+    st.session_state.pop("claim_photo_path", None)
+    st.session_state.pop("claim_photo_marker", None)
 
-    # Outside the form deliberately. st.form batches its inputs and submits once; this is a second,
-    # separate decision taken after seeing the summary -- the customer confirms what they read.
-    if st.button("Submit claim", type="primary", key="confirm_submit"):
-        try:
-            with st.spinner("Running checks and submitting..."):
-                claim_number, status, checks = submit_claim(policy, st.session_state.pending_claim)
-        except Exception as err:  # noqa: BLE001 -- the page is the only place errors are visible
-            st.error(f"Could not submit the claim: {err}")
-            return
+    if status == "Approved":
+        st.success(f"Claim **{claim_number}** approved.")
+        st.balloons()
+        st.write("You will receive your settlement within 3 to 5 business days.")
+    else:
+        # Not phrased as a rejection. A held claim is one a person will look at, and the checks
+        # below say exactly why -- a customer who reads "declined" when they mean "queued" will
+        # call, which helps nobody.
+        st.warning(f"Claim **{claim_number}** has been submitted and is under review.")
+        st.write("One or more checks did not pass. A claims handler will look at it.")
 
-        st.session_state.pop("pending_claim", None)
-        st.session_state.pop("claim_photo_path", None)
-        st.session_state.pop("claim_photo_marker", None)
-
-        if status == "Approved":
-            st.success(f"Claim **{claim_number}** approved.")
-            st.balloons()
-            st.write("You will receive your settlement within 3 to 5 business days.")
-        else:
-            # Not phrased as a rejection. A held claim is one a person will look at, and the
-            # checks below say exactly why -- a customer who reads "declined" when they mean
-            # "queued" will call, which helps nobody.
-            st.warning(f"Claim **{claim_number}** has been submitted and is under review.")
-            st.write("One or more checks did not pass. A claims handler will look at it.")
-
-        st.markdown("**Check results**")
-        for check in checks:
-            icon = "✅" if check["passed"] else "⚠️"
-            st.markdown(f"{icon} **{check['check_name']}** — {check['detail']}")
+    st.markdown("**Check results**")
+    for check in checks:
+        icon = "✅" if check["passed"] else "⚠️"
+        st.markdown(f"{icon} **{check['check_name']}** — {md_escape(check['detail'])}")
 
 
 def render_admin() -> None:
@@ -1110,6 +1134,11 @@ def render_diagnostics() -> None:
             st.error(f"Lakebase query failed: {err}")
 
     st.divider()
+    render_runtime_environment()
+
+
+def render_runtime_environment() -> None:
+    """Just the environment panel -- no queries, safe to render on every run."""
     st.markdown("**Runtime environment**")
     st.caption(
         "What the container actually received. These come from `valueFrom` bindings in "
@@ -1125,6 +1154,7 @@ def render_diagnostics() -> None:
             "CLAIMS_VOLUME": os.getenv("CLAIMS_VOLUME", "(unset)"),
             "PGUSER": os.getenv("PGUSER", "(unset -- falling back to SP client id)"),
             "PGHOST_injected": os.getenv("PGHOST", "(unset)"),
+            "streamlit": st.__version__,
             "OPENAI_MODEL": os.getenv("OPENAI_MODEL", "(unset)"),
             # PRESENCE AND LENGTH ONLY -- never the value. This expander renders on a page any
             # app viewer can open, so printing the key here would leak it to everyone with access.
@@ -1149,20 +1179,35 @@ st.title("🚗 Smart Claims")
 st.caption(f"Signed in as **{current_user()}** · queries run as the app's service principal")
 
 # The transcript's two modes: "it has the customer mode which we are in currently as well as the
-# admin mode". Worth being explicit about what this is -- a workflow switch, NOT a security
-# boundary. Every query runs as the app's service principal whichever tab is open, and nothing
-# here checks who you are. Real separation would mean per-user authorization, a different design.
-tab_customer, tab_admin, tab_assistant = st.tabs(["Customer", "Admin", "Assistant"])
+# admin mode". A workflow switch, NOT a security boundary -- every query runs as the app's service
+# principal whichever screen is open, and nothing here checks who you are.
+#
+# A RADIO, NOT st.tabs, AND THE REASON MATTERS. st.tabs is client-side: Streamlit executes the
+# content of EVERY tab on EVERY script run, then the browser shows one. With three tabs that meant
+# each keystroke-triggered re-run fired the admin KPI query, the trend query, two breakdowns and
+# the review queue -- while the user was on the customer screen. Cold-start a suspended warehouse
+# in the middle of that and the page blocks for ~17 seconds and looks like it has lost its
+# connection. A radio picks one branch, so only that screen's queries run.
+mode = st.radio(
+    "Mode", ["Customer", "Admin", "Assistant"],
+    horizontal=True, label_visibility="collapsed",
+)
 
-with tab_customer:
+if mode == "Customer":
     render_customer()
-
-with tab_admin:
+elif mode == "Admin":
     render_admin()
-
-with tab_assistant:
+else:
     render_assistant()
 
-# Outside the tabs and collapsed by default: reachable from any screen, in the way of none.
+# Collapsed is not the same as not executed -- everything inside an expander runs on every script
+# run. These are two database round trips, so they sit behind an explicit button instead.
 with st.expander("Diagnostics"):
-    render_diagnostics()
+    if st.button("Run connectivity check"):
+        render_diagnostics()
+    else:
+        st.caption(
+            "Queries both backends to confirm they are reachable. Not run automatically: it costs "
+            "a warehouse query and a Lakebase query every time the page re-runs."
+        )
+        render_runtime_environment()
