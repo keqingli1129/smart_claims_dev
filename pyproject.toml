@@ -26,7 +26,10 @@ dev = [
 # installs, and none of them needs Streamlit. The deployed app installs from
 # src/app/requirements.txt instead, which is why the two lists overlap.
 app = [
-    "streamlit",
+    # Pinned to match src/app/requirements.txt exactly. The deployed app overrides the runtime's
+    # pre-installed 1.38.0 with this same version; change the two together or local and deployed
+    # drift apart again.
+    "streamlit==1.64.0",
     "psycopg2-binary",
     "databricks-sql-connector",
     "databricks-sdk",

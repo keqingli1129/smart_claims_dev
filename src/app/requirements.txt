@@ -1,6 +1,10 @@
-# Only what the Databricks Apps runtime does NOT already provide.
+# What the Databricks Apps runtime does not provide, PLUS anything we deliberately override.
 #
-# Pre-installed (do not list): streamlit 1.38.0, flask, fastapi, dash, gradio.
+# Pre-installed and left alone: flask, fastapi, dash, gradio.
+#
+# An earlier version of this comment said pre-installed packages must never be listed. That was
+# too strong -- the guidance says they do not NEED listing, which is not the same as forbidding
+# it. Listing one pins it and overrides the runtime's copy.
 #
 # psycopg2-binary is NOT optional -- it is absent from the runtime, and a Lakebase app that
 # omits it crashes on start rather than failing at the first query. `-binary` because the
@@ -20,3 +24,25 @@ databricks-sdk==0.139.0
 # openai package moves fast and a wrong pin fails at container build, which is a slow way to
 # find out.
 openai==3.19.2
+
+
+# OVERRIDES THE RUNTIME'S PRE-INSTALLED 1.38.0, on purpose.
+#
+# The reason is parity: the local venv resolves streamlit unpinned and lands on 1.64.0, so
+# without this every local test ran against an API 26 minor versions ahead of production. Code
+# that worked locally could fail only after deploy -- `use_container_width` on st.image, which
+# needs 1.39, is the example that already bit us.
+#
+# Pinned here AND in pyproject.toml's `app` group, and the two must be changed together or the
+# gap silently reopens.
+#
+# The upgrade was expected to be risky: pip resolves 1.64 over the runtime's 1.38 dependency set
+# (tornado, protobuf, pyarrow all move), and 1.38->1.64 crosses Streamlit's websocket and
+# static-asset rework. It deployed clean, and the long-standing page flicker APPEARS TO HAVE GONE
+# with it -- preliminary, since the flicker was always intermittent.
+#
+# That flicker was previously written off as environmental on the strength of a minimal-page
+# bisect. The bisect held the Streamlit version constant at 1.38, so it could only prove "not our
+# app code"; concluding "not Streamlit at all" went further than the evidence. If the flicker
+# returns, this line is the first thing to re-examine -- in either direction.
+streamlit==1.64.0
