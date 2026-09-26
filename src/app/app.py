@@ -340,6 +340,20 @@ def fetch_claim_checks(claim_number: str) -> list[dict]:
     return [{"check_name": name, "passed": passed, "detail": detail} for name, passed, detail in rows]
 
 
+@st.cache_data(ttl=3600, show_spinner=False)
+def fetch_claim_photo(image_path: str) -> bytes:
+    """The claim's photo, as bytes, straight from the volume.
+
+    A long TTL because these are immutable: upload_claim_photo stamps every filename with a
+    timestamp, so a given path always holds the same image and re-fetching it is waste.
+
+    Cached on the PATH, which matters -- st.cache_data keys on the arguments, so two claims never
+    share an entry, and the memory cost is bounded by how many claims get opened rather than by
+    how many times each is viewed.
+    """
+    return WorkspaceClient().files.download(image_path).contents.read()
+
+
 SPEED_LIMIT_KPH = 130
 
 
@@ -1066,10 +1080,16 @@ def _render_review_queue() -> None:
     b.metric("Held for review", f"{held:,}")
     c.metric("Auto-approved", f"{len(frame) - held:,}")
 
-    st.dataframe(
+    # on_select="rerun" turns the table into a control: clicking a row re-runs the script and the
+    # returned event carries the selection. It needs a stable `key` -- that is what Streamlit hangs
+    # the widget's state on across re-runs, and without it the selection would reset constantly.
+    event = st.dataframe(
         frame,
         hide_index=True,
         use_container_width=True,
+        on_select="rerun",
+        selection_mode="single-row",
+        key="review_queue",
         column_config={
             "claim_number": st.column_config.TextColumn("Claim"),
             "policy_number": st.column_config.TextColumn("Policy"),
@@ -1084,7 +1104,107 @@ def _render_review_queue() -> None:
             "failed_checks": st.column_config.NumberColumn("Failed checks", format="%d"),
         },
     )
-    st.caption("Per-claim detail -- the four verdicts and the photo -- is the next step.")
+    # .rows holds POSITIONAL indexes into the frame as displayed, not claim numbers and not
+    # DataFrame index labels. Hence .iloc -- .loc would silently fetch the wrong claim.
+    chosen = event.selection.rows
+    if not chosen:
+        st.caption("Select a claim above to see its checks and photo.")
+        return
+
+    _render_claim_detail(frame.iloc[chosen[0]]["claim_number"])
+
+
+def _render_claim_detail(claim_number: str) -> None:
+    """One claim, in full: its facts, the uploaded photo, and every check with its verdict."""
+    try:
+        claim = fetch_claim(claim_number)
+        checks = fetch_claim_checks(claim_number)
+    except Exception as err:  # noqa: BLE001
+        st.error(f"Could not load claim {claim_number}: {err}")
+        return
+
+    if claim is None:
+        # Reachable in normal use: the queue is cached for 30s, so a row can outlive its claim.
+        st.warning(f"Claim {claim_number} is no longer there. Refresh the queue.")
+        return
+
+    st.divider()
+    st.markdown(f"### {md_escape(claim['claim_number'])}")
+
+    facts, photo = st.columns([2, 1])
+
+    with facts:
+        # Built as a list of pairs and filtered, rather than a fixed block of markdown, because
+        # most of these columns are nullable -- a claim with no location should lose that line
+        # rather than show "Location: None".
+        rows = [
+            ("Status", claim["status"]),
+            ("Policy", claim["policy_number"]),
+            ("Policy holder", claim["customer_name"]),
+            ("Incident", f"{claim['incident_date']} - {claim['incident_type']}"),
+            ("Location", claim["accident_location"]),
+            ("Amount claimed",
+             f"${claim['claim_amount']:,.2f}" if claim["claim_amount"] is not None else None),
+            ("Self-assessed", claim["self_assessed_severity"]),
+            # Spelled out rather than omitted: "no prediction" is itself the answer until the
+            # classifier is wired up, and a missing line would read as if nobody had asked.
+            ("Model prediction", claim["predicted_severity"] or "none yet - model not wired up"),
+            ("Vehicles involved", claim["vehicles_involved"]),
+            ("Filed by", claim["submitted_by"]),
+            ("Submitted", claim["submitted_at"]),
+        ]
+        st.markdown("\n".join(
+            f"- **{label}:** {md_escape(str(value))}"
+            for label, value in rows if value is not None
+        ))
+        if claim["notes"]:
+            st.markdown("**Notes**")
+            st.markdown(f"> {md_escape(claim['notes'])}")
+
+    with photo:
+        _render_claim_photo(claim["image_path"])
+
+    st.markdown("**Automated checks**")
+    if not checks:
+        # Not the same as "everything passed" -- it means nothing was ever written, which for a
+        # claim that went through submit_claim would be a bug worth seeing rather than hiding.
+        st.warning("No checks were recorded for this claim.")
+        return
+
+    failed = [c for c in checks if not c["passed"]]
+    st.caption(
+        f"{len(checks) - len(failed)} of {len(checks)} passed."
+        if failed else f"All {len(checks)} checks passed."
+    )
+
+    for check in checks:
+        # The detail is written on a pass as well as a failure, so the screen answers "why was
+        # this auto-approved" as readily as "why was this held". Rendering both the same way is
+        # deliberate; only the icon differs.
+        icon = ":white_check_mark:" if check["passed"] else ":x:"
+        st.markdown(f"{icon} **{md_escape(check['check_name'])}**")
+        st.caption(md_escape(check["detail"]))
+
+
+def _render_claim_photo(image_path: str | None) -> None:
+    """The uploaded photo, or an honest line about why there is not one."""
+    if not image_path:
+        st.caption("No photo attached.")
+        return
+
+    try:
+        image = fetch_claim_photo(image_path)
+    except Exception as err:  # noqa: BLE001
+        # A claim row can outlive its file -- the volume is not transactional with Postgres. The
+        # path is shown because it is the only thing that makes such a gap diagnosable from here.
+        st.warning(f"Could not load the photo: {err}")
+        st.caption(md_escape(image_path))
+        return
+
+    # width="stretch" rather than use_container_width=True: the latter still works on 1.64 but is
+    # documented as deprecated. The four older uses elsewhere in this file have not been migrated.
+    st.image(image, width="stretch")
+    st.caption(md_escape(image_path.rsplit("/", 1)[-1]))
 
 
 def render_assistant() -> None:
