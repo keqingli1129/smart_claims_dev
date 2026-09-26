@@ -230,6 +230,47 @@ def ensure_claims_schema() -> bool:
     return True
 
 
+@st.cache_data(ttl=30)
+def list_submitted_claims(status: str | None = None) -> "pd.DataFrame":
+    """Claims this app has taken in, newest first, with a count of failed checks.
+
+    Returns an EMPTY frame when claims.submitted_claim does not exist. That is not an error
+    state: the schema is created by the first submission, so an admin opening this screen before
+    anyone has filed a claim is the normal first-run experience, and an "undefined table"
+    traceback would be a poor way to say "no claims yet".
+
+    Catching that cleanly depends on the connection being in autocommit -- a failed statement
+    inside an open transaction would poison the connection for every subsequent query on it.
+
+    Short TTL because this is operational rather than analytical: a handler wants to see what
+    arrived a minute ago, not a five-minute-old snapshot.
+    """
+    from psycopg2 import errors
+
+    sql = """
+        SELECT c.claim_number, c.policy_number, c.customer_name, c.incident_date,
+               c.incident_type, c.claim_amount, c.self_assessed_severity, c.status,
+               c.submitted_by, c.submitted_at,
+               count(*) FILTER (WHERE NOT k.passed) AS failed_checks
+        FROM claims.submitted_claim c
+        LEFT JOIN claims.claim_check k ON k.claim_number = c.claim_number
+        WHERE (%s::text IS NULL OR c.status = %s)
+        GROUP BY c.claim_number
+        ORDER BY c.submitted_at DESC
+        LIMIT 200
+    """
+    columns = ["claim_number", "policy_number", "customer_name", "incident_date", "incident_type",
+               "claim_amount", "self_assessed_severity", "status", "submitted_by", "submitted_at",
+               "failed_checks"]
+    try:
+        with lakebase_connection().cursor() as cur:
+            cur.execute(sql, (status, status))
+            rows = cur.fetchall()
+    except errors.UndefinedTable:
+        return pd.DataFrame(columns=columns)
+    return pd.DataFrame(rows, columns=columns)
+
+
 SPEED_LIMIT_KPH = 130
 
 
@@ -893,10 +934,75 @@ def render_admin() -> None:
         "so the flatness is a property of the synthetic data, not a finding about claims."
     )
 
-    st.info(
-        "Review queue and per-claim detail are not built yet -- they read the claims this app "
-        "takes in, which begins with the customer submission flow."
+    st.divider()
+    _render_review_queue()
+
+
+def _render_review_queue() -> None:
+    """Claims submitted through this app -- NOT the 12,996 above.
+
+    Worth keeping straight: everything higher on this screen aggregates the gold table, which is
+    the historical book from the lakehouse. This reads claims.submitted_claim in Lakebase, which
+    holds only what this app has taken in. They are different populations and will never agree.
+    """
+    st.markdown("**Review queue**")
+    st.caption(
+        "Claims submitted through this app. Separate from the portfolio figures above, which "
+        "come from the gold layer."
     )
+
+    left, right = st.columns([3, 1])
+    with left:
+        choice = st.radio(
+            "Show", ["All", "Under Review", "Approved"],
+            horizontal=True, label_visibility="collapsed",
+        )
+    with right:
+        if st.button("Refresh", use_container_width=True):
+            # The 30s cache is right for normal use and wrong when a handler has just asked
+            # someone to resubmit and wants to see it land.
+            list_submitted_claims.clear()
+            st.rerun()
+
+    try:
+        frame = list_submitted_claims(None if choice == "All" else choice)
+    except Exception as err:  # noqa: BLE001
+        st.error(f"Could not load the review queue: {err}")
+        return
+
+    if frame.empty:
+        st.info(
+            "No claims submitted yet. The customer tab files one, and the `claims` schema is "
+            "created by that first submission."
+            if choice == "All" else f"No claims with status “{choice}”."
+        )
+        return
+
+    held = int((frame["status"] == "Under Review").sum())
+    a, b, c = st.columns(3)
+    a.metric("Submitted", f"{len(frame):,}")
+    b.metric("Held for review", f"{held:,}")
+    c.metric("Auto-approved", f"{len(frame) - held:,}")
+
+    st.dataframe(
+        frame,
+        hide_index=True,
+        use_container_width=True,
+        column_config={
+            "claim_number": st.column_config.TextColumn("Claim"),
+            "policy_number": st.column_config.TextColumn("Policy"),
+            "customer_name": st.column_config.TextColumn("Policy holder"),
+            "incident_date": st.column_config.DateColumn("Incident"),
+            "incident_type": st.column_config.TextColumn("Type"),
+            "claim_amount": st.column_config.NumberColumn("Amount", format="$%.2f"),
+            "self_assessed_severity": st.column_config.TextColumn("Self-assessed"),
+            "status": st.column_config.TextColumn("Status"),
+            "submitted_by": st.column_config.TextColumn("Filed by"),
+            "submitted_at": st.column_config.DatetimeColumn("Submitted"),
+            "failed_checks": st.column_config.NumberColumn("Failed checks", format="%d"),
+        },
+    )
+    st.caption("Per-claim detail -- the four verdicts and the photo -- is the next step.")
 
 
 def render_assistant() -> None:
