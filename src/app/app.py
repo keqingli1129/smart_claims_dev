@@ -282,6 +282,64 @@ def list_submitted_claims(status: str | None = None) -> "pd.DataFrame":
     return pd.DataFrame(rows, columns=columns)
 
 
+CLAIM_DETAIL_COLUMNS = (
+    "claim_number", "policy_number", "customer_name", "incident_date", "incident_type",
+    "accident_location", "claim_amount", "self_assessed_severity", "predicted_severity",
+    "vehicles_involved", "notes", "image_path", "submitted_by", "status", "submitted_at",
+)
+
+
+@st.cache_data(ttl=30)
+def fetch_claim(claim_number: str) -> dict | None:
+    """One submitted claim, whole -- every column, not the queue's subset.
+
+    The queue deliberately selects a narrow set of columns for a table that has to stay readable
+    at a glance. This is the other half: accident_location, vehicles_involved, notes, image_path
+    and predicted_severity, none of which belong in a list view but all of which a handler needs
+    before deciding anything.
+
+    Returns None when the claim number does not exist, which is reachable in normal use: the
+    queue is cached for 30s, so a row can be selected slightly after someone else deleted it.
+    """
+    sql = f"SELECT {', '.join(CLAIM_DETAIL_COLUMNS)} FROM claims.submitted_claim WHERE claim_number = %s"
+    with live_lakebase_connection().cursor() as cur:
+        cur.execute(sql, (claim_number,))
+        row = cur.fetchone()
+    if row is None:
+        return None
+    claim = dict(zip(CLAIM_DETAIL_COLUMNS, row))
+    # NUMERIC arrives as Decimal, which formats badly and compares badly against the floats the
+    # rest of the app uses. lookup_policy does the same conversion for the same reason.
+    claim["claim_amount"] = float(claim["claim_amount"]) if claim["claim_amount"] is not None else None
+    return claim
+
+
+@st.cache_data(ttl=30)
+def fetch_claim_checks(claim_number: str) -> list[dict]:
+    """The verdicts for one claim, in the order the checks were run.
+
+    ORDER BY id, not by name: id is a SERIAL and submit_claim inserts the checks in the order
+    run_claim_checks produced them, so the sequence the transcript presents survives into the
+    admin screen for free. Sorting by check_name would scramble it alphabetically.
+
+    A list of dicts rather than a DataFrame because the caller renders one block per check rather
+    than a table -- the detail text is a sentence, not a cell.
+
+    Returns [] for an unknown claim, which is indistinguishable here from a claim whose checks
+    were never written. The caller has fetch_claim to tell those apart.
+    """
+    sql = """
+        SELECT check_name, passed, detail
+        FROM claims.claim_check
+        WHERE claim_number = %s
+        ORDER BY id
+    """
+    with live_lakebase_connection().cursor() as cur:
+        cur.execute(sql, (claim_number,))
+        rows = cur.fetchall()
+    return [{"check_name": name, "passed": passed, "detail": detail} for name, passed, detail in rows]
+
+
 SPEED_LIMIT_KPH = 130
 
 
