@@ -1,0 +1,73 @@
+# Transcript section: "Model Serving" -- the damage classifier behind a REST endpoint, so the app
+# can score a customer's photo while they are still filling in the form.
+#
+# WHY AN ENDPOINT RATHER THAN LOADING THE MODEL IN THE APP. The registered model is a pyfunc
+# wrapping a HuggingFace ResNet, and its pinned dependencies are torch, transformers and pillow.
+# Putting those in src/app/requirements.txt would add gigabytes to every container build and press
+# against the app's 6 GB limit, to run a model that is idle most of the time. An endpoint keeps the
+# app container light and lets the model scale to zero independently.
+#
+# A BUNDLE RESOURCE, NOT A CLI OBJECT. `databricks serving-endpoints create` would have worked and
+# been quicker. It is deliberately not used, for the reason recorded in resources/lakebase.yml: the
+# hand-made Lakebase objects were deleted and rebuilt declaratively so that the workspace matches
+# the repository. An endpoint created by hand is one more thing `git clone && bundle deploy` does
+# not reproduce.
+
+resources:
+  model_serving_endpoints:
+    damage_classifier:
+      # Target-suffixed because endpoint names are unique per workspace and dev and prod share
+      # one here.
+      #
+      # UNLIKE apps and Lakebase projects, development mode DOES prefix this one: the deployed id
+      # came back as `dev_keqingli1129_smart-claims-damage-dev`, not the name written here. So the
+      # suffix is belt-and-braces rather than load-bearing -- but every CLI call has to use the
+      # PREFIXED name, which is not what this file says and is easy to get wrong.
+      name: smart-claims-damage-${bundle.target}
+      description: Damage-severity classifier for photos uploaded with a claim.
+
+      config:
+        served_entities:
+          # `name` is ours to choose and is what traffic_config routes to below. Getting the two
+          # out of step is the documented way to build an endpoint whose route matches nothing.
+          - name: claims-damage-level
+            # Resolved through the schema RESOURCE, not spelled out, so it follows development
+            # mode's prefix exactly as the gold table does for the app:
+            #   dev  -> smart_claims_dev.dev_keqingli1129_gold.claims_damage_level
+            #   prod -> smart_claims_dev.gold.claims_damage_level
+            entity_name: ${var.catalog}.${resources.schemas.gold.name}.claims_damage_level
+
+            # PINNED, AND THE ALIAS IS NOT AN OPTION. Serving takes a version number; the bundle
+            # schema has no field for a UC alias, so `@prod` cannot be named here. That matters:
+            # retraining and repointing @prod leaves THIS endpoint still serving version 7. The
+            # alias stays the source of truth for which version is current, and moving it is only
+            # half the job -- this number has to move with it, or the app and the registry quietly
+            # disagree about what "production" means.
+            #
+            # Resolved on 2026-09-26 via:
+            #   databricks model-versions get-by-alias \
+            #     smart_claims_dev.dev_keqingli1129_gold.claims_damage_level prod
+            #
+            # v7 COULD NOT BE SERVED. Its pip_requirements omitted torchvision -- present on the
+            # training runtime, absent from a serving container -- so the endpoint failed with
+            # `AutoImageProcessor requires the Torchvision library`. v8 is the SAME weights,
+            # re-logged with torchvision recorded; @prod moved with it.
+            entity_version: "8"
+
+            # Smallest CPU tier. The model is a ResNet scoring one 224x224 image per request, not
+            # a batch job -- the work is small and the wait is dominated by cold starts, which a
+            # larger workload size would not help.
+            workload_size: Small
+
+            # Scale to zero, with eyes open. It costs nothing while idle, which matters on a tier
+            # that meters an allowance rather than a bill. The price is the FIRST request after an
+            # idle period, which has to provision compute and load torch plus the model weights --
+            # minutes, not milliseconds. The app must therefore treat scoring as something that
+            # can be slow or fail, and must never block a claim submission on it.
+            scale_to_zero_enabled: true
+
+        traffic_config:
+          routes:
+            # Must match served_entities[].name above, exactly.
+            - served_model_name: claims-damage-level
+              traffic_percentage: 100

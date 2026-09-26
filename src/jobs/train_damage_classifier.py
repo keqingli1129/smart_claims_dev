@@ -312,7 +312,14 @@ def lib_version(lib: str) -> str:
 
 
 LIB_VERSIONS = {
-    lib: lib_version(lib) for lib in ("mlflow", "torch", "transformers", "datasets", "pillow")
+    # torchvision is here because the SERVING container proved it has to be. It is installed by
+    # the %pip cell above and was never recorded, so a model that loads fine on this cluster died
+    # at `AutoImageProcessor.from_pretrained` in serving with
+    #     ImportError: AutoImageProcessor requires the Torchvision library
+    # transformers gates the class itself: touching .from_pretrained calls requires_backends()
+    # before any PIL fallback is considered, so pillow alone does not save it.
+    lib: lib_version(lib)
+    for lib in ("mlflow", "torch", "torchvision", "transformers", "datasets", "pillow")
 }
 print(json.dumps(LIB_VERSIONS, indent=2))
 
@@ -631,6 +638,10 @@ with mlflow.start_run(run_id=RUN_ID):
         pip_requirements=[
             f"mlflow=={LIB_VERSIONS['mlflow']}",
             f"torch=={LIB_VERSIONS['torch']}",
+            # NOT optional -- see the note on LIB_VERSIONS. An undeclared dependency that the
+            # training runtime happens to provide is invisible until something with a smaller
+            # environment, like a serving container, tries to load the model.
+            f"torchvision=={LIB_VERSIONS['torchvision']}",
             f"transformers=={LIB_VERSIONS['transformers']}",
             f"pillow=={LIB_VERSIONS['pillow']}",
             "pandas",

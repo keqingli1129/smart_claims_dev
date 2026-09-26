@@ -15,6 +15,7 @@ access our data... you would always have some kind of latency because the SQL wa
 of an analytical compute option".
 """
 
+import base64
 import io
 import os
 import uuid
@@ -369,9 +370,12 @@ def run_claim_checks(policy: dict, claim: dict) -> list[dict]:
     """
     checks: list[dict] = []
 
-    # 1. The damage model against the customer's own assessment. Not wired up yet, so there is
-    #    nothing to disagree with -- reported as passed-with-caveat rather than failed. Failing a
-    #    claim for a check that cannot run would hold every claim for a reason nobody can fix.
+    # 1. The damage model against the customer's own assessment. The prediction is made at upload
+    #    time by score_damage(); it is None when no photo was attached or the endpoint could not
+    #    be reached -- which, with a scale-to-zero endpoint, is a normal Tuesday rather than an
+    #    outage. A check that COULD NOT RUN is reported as passed-with-caveat rather than failed:
+    #    failing a claim for a check that cannot run would hold every claim for a reason nobody
+    #    can fix.
     predicted = claim.get("predicted_severity")
     if not predicted:
         checks.append({
@@ -528,6 +532,74 @@ def claims_volume_path() -> str:
     if raw.startswith("/"):
         return raw.rstrip("/")
     return "/Volumes/" + raw.replace(".", "/")
+
+
+# What the model was trained at, and what its image processor resizes to anyway.
+MODEL_IMAGE_SIZE = 224
+
+
+def _shrink_for_scoring(image_bytes: bytes) -> bytes:
+    """Downscale a photo to what the model actually consumes before sending it.
+
+    NOT AN OPTIMISATION -- IT IS REQUIRED. A scale-to-zero serving endpoint enforces a much
+    smaller maximum request size than a warm one, and a 3.5 MB phone photo (4.7 MB once
+    base64-encoded) is refused outright:
+
+        Max request size exceeded for a scale to zero endpoint.
+
+    The trap is that the same request SUCCEEDS against a freshly-provisioned endpoint, so this
+    fails only once the endpoint has gone idle -- which is most of the time, and looks like an
+    intermittent fault rather than a size limit.
+
+    Nothing is lost by shrinking: training resized to 224 (silver.training_images_resized) and the
+    processor resizes again at predict time. Measured on a real upload: 4000x3000 / 3.5 MB becomes
+    224x168 / 21 KB, a 160x reduction, with identical input reaching the model.
+
+    thumbnail() preserves aspect ratio and never upscales, so a photo already smaller than 224 is
+    left alone rather than stretched.
+    """
+    from PIL import Image
+
+    image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+    image.thumbnail((MODEL_IMAGE_SIZE, MODEL_IMAGE_SIZE))
+    buffer = io.BytesIO()
+    image.save(buffer, format="JPEG", quality=90)
+    return buffer.getvalue()
+
+
+def score_damage(image_bytes: bytes) -> str:
+    """Ask the serving endpoint what severity this photo shows.
+
+    THE RESPONSE SHAPE IS NOT A SCALAR. The pyfunc returns a pandas Series, which serializes to a
+    dict keyed by the Series INDEX as a string -- a single-image request comes back as
+    `[{"0": "Minor Damage"}]`. Reading it as `["0"]` would work today and break the moment the
+    index is anything else, so the single value is taken out of the dict instead.
+
+    Deliberately NOT cached. The caller scores once per uploaded photo and keeps the answer in
+    session state; caching here as well would key on megabytes of image bytes for no gain.
+    """
+    endpoint = os.getenv("DAMAGE_ENDPOINT", "").strip()
+    if not endpoint:
+        raise RuntimeError("DAMAGE_ENDPOINT is unset -- is the damage-endpoint resource attached?")
+
+    # The signature declares `content` as binary, and JSON has no binary type, so the bytes travel
+    # base64-encoded and MLflow decodes them back before predict() sees them.
+    response = WorkspaceClient().serving_endpoints.query(
+        name=endpoint,
+        dataframe_records=[{"content": base64.b64encode(_shrink_for_scoring(image_bytes)).decode()}],
+    )
+
+    predictions = response.predictions or []
+    if not predictions:
+        raise RuntimeError("The model returned no prediction.")
+
+    first = predictions[0]
+    if isinstance(first, dict):
+        values = [v for v in first.values() if v is not None]
+        if not values:
+            raise RuntimeError("The model returned an empty prediction -- was the image readable?")
+        return str(values[0])
+    return str(first)
 
 
 def upload_claim_photo(uploaded, policy_number: str) -> str:
@@ -806,8 +878,9 @@ def _render_photo_upload(policy: dict) -> None:
 
     left, right = st.columns([1, 2])
     with left:
-        # NOT use_container_width: st.image only accepts that from Streamlit 1.39, and the Databricks
-        # Apps runtime ships 1.38.0. width= has been valid throughout.
+        # width= in pixels, deliberately. The runtime used to ship Streamlit 1.38, where
+        # use_container_width on st.image did not exist; it is now pinned to 1.64 where it does but
+        # is deprecated in favour of width=. Either way this stays as it is.
         st.image(uploaded, caption=uploaded.name, width=280)
 
     with right:
@@ -826,13 +899,41 @@ def _render_photo_upload(policy: dict) -> None:
                 st.session_state.pop("claim_photo_path", None)
                 return
 
+            # Scored HERE, inside the marker check, so one photo is scored once rather than on
+            # every re-run of the page.
+            #
+            # A SCORING FAILURE MUST NOT BLOCK THE CLAIM. The endpoint scales to zero, so the
+            # first request after an idle spell provisions compute and loads torch -- minutes,
+            # and it can time out. If that happens the severity stays None, the claim submits
+            # normally, and the Severity check reports that no prediction was available. That is
+            # the same passed-with-caveat path as before the model existed.
+            st.session_state.pop("claim_photo_severity", None)
+            st.session_state.pop("claim_photo_error", None)
+            try:
+                with st.spinner("Asking the damage model (can be slow if it has been idle)..."):
+                    st.session_state.claim_photo_severity = score_damage(uploaded.getvalue())
+            except Exception as err:  # noqa: BLE001
+                st.session_state.claim_photo_error = str(err)
+
         st.success("Photo saved.")
         st.caption(f"`{st.session_state.claim_photo_path}`")
         st.caption(f"{uploaded.size / 1024:,.0f} KB")
-        st.info(
-            "The damage model is not wired up yet. Once it is, the severity it predicts from this "
-            "photo is compared against your own assessment below."
-        )
+
+        predicted = st.session_state.get("claim_photo_severity")
+        if predicted:
+            st.info(
+                f"The damage model assessed this photo as **{md_escape(predicted)}**. Your own "
+                "assessment below is compared against it -- a disagreement does not reject the "
+                "claim, it sends it for human review."
+            )
+        else:
+            # Stated plainly rather than hidden: the customer should know the check will not run.
+            st.warning(
+                "The damage model could not be reached, so the severity cannot be verified "
+                "automatically. Your claim can still be submitted and will go to a handler."
+            )
+            if st.session_state.get("claim_photo_error"):
+                st.caption(md_escape(st.session_state["claim_photo_error"]))
 
 
 def _render_claim_form(policy: dict) -> None:
@@ -909,7 +1010,9 @@ def _render_claim_form(policy: dict) -> None:
         "notes": notes.strip() or None,
         "submitted_by": current_user(),
         "image_path": st.session_state.get("claim_photo_path"),
-        "predicted_severity": None,
+        # Set by _render_photo_upload when the model answered; None when there was no photo or
+        # the endpoint could not be reached. run_claim_checks treats None as "could not run".
+        "predicted_severity": st.session_state.get("claim_photo_severity"),
     }
 
     try:
@@ -921,6 +1024,8 @@ def _render_claim_form(policy: dict) -> None:
 
     st.session_state.pop("claim_photo_path", None)
     st.session_state.pop("claim_photo_marker", None)
+    st.session_state.pop("claim_photo_severity", None)
+    st.session_state.pop("claim_photo_error", None)
 
     if status == "Approved":
         st.success(f"Claim **{claim_number}** approved.")
@@ -1148,7 +1253,9 @@ def _render_claim_detail(claim_number: str) -> None:
             ("Self-assessed", claim["self_assessed_severity"]),
             # Spelled out rather than omitted: "no prediction" is itself the answer until the
             # classifier is wired up, and a missing line would read as if nobody had asked.
-            ("Model prediction", claim["predicted_severity"] or "none yet - model not wired up"),
+            # Spelled out rather than dropped: "the model did not answer" is itself information
+            # a handler needs, because it explains why the Severity check passed with a caveat.
+            ("Model prediction", claim["predicted_severity"] or "not available for this claim"),
             ("Vehicles involved", claim["vehicles_involved"]),
             ("Filed by", claim["submitted_by"]),
             ("Submitted", claim["submitted_at"]),

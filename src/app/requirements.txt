@@ -46,3 +46,12 @@ openai==3.19.2
 # app code"; concluding "not Streamlit at all" went further than the evidence. If the flicker
 # returns, this line is the first thing to re-examine -- in either direction.
 streamlit==1.64.0
+
+# Used by _shrink_for_scoring() to downscale a photo before sending it to the serving endpoint.
+#
+# DECLARED RATHER THAN ASSUMED. Streamlit depends on pillow, so it is present in the runtime
+# whether this line exists or not -- which is exactly the reasoning that left torchvision out of
+# the damage model's pip_requirements and cost an afternoon: the model loaded everywhere the ML
+# runtime was and nowhere else. An import the code makes directly gets declared, even when
+# something else happens to bring it in today.
+pillow

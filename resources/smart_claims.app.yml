@@ -99,6 +99,22 @@ resources:
             key: openai-api-key
             permission: READ
 
+        # The damage classifier. Attaching it does the same two jobs as the table above: it
+        # GRANTS the service principal CAN_QUERY on the endpoint, and it carries the resolved
+        # endpoint NAME so app.yaml does not have to hardcode one that differs per target.
+        #
+        # The name is built the same way the resource itself builds it, and development mode
+        # prefixes serving endpoints (unlike apps and Lakebase projects) -- so this resolves to
+        # dev_keqingli1129_smart-claims-damage-dev in dev.
+        #
+        # CAN_QUERY, not CAN_MANAGE: the app sends images and reads labels. It has no business
+        # changing which model version is served -- that is a bundle edit, deliberately.
+        - name: damage-endpoint
+          description: Damage-severity classifier for uploaded accident photos.
+          serving_endpoint:
+            name: ${resources.model_serving_endpoints.damage_classifier.name}
+            permission: CAN_QUERY
+
         - name: gold-claims-table
           description: The gold claims table the admin views aggregate over.
           uc_securable:

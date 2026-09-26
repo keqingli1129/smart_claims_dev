@@ -57,6 +57,13 @@ env:
   - name: CLAIMS_TABLE
     valueFrom: gold-claims-table
 
+  # The damage classifier endpoint. `valueFrom` hands over the resolved endpoint NAME, which is
+  # what the serving REST path needs -- and attaching the resource is also what grants the service
+  # principal permission to call it. Both halves are required: a name without the grant gets a
+  # 403, a grant without the name gets nothing to call.
+  - name: DAMAGE_ENDPOINT
+    valueFrom: damage-endpoint
+
   # The chat feature's key. Resolves to the secret VALUE, not the scope/key names -- the platform
   # reads it out of the Databricks secret store at container start. Which also means a rotated key
   # needs an app restart: the variable is set once, when the process starts.
